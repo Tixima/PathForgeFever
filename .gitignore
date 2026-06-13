@@ -1,0 +1,7 @@
+# Spiel-Export (nutzerspezifisch, oft sehr groß)
+tpf2_network_export.json
+web/public/data/*.json
+
+# OS / Editor
+.DS_Store
+Thumbs.db
