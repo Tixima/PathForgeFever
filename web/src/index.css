@@ -3382,6 +3382,71 @@ button {
   text-align: center;
 }
 
+.general-map {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.general-map__notice {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.map-layer-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.map-layer-panel__title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.map-layer-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.map-layer-panel__item input {
+  accent-color: var(--accent);
+}
+
+.map-layer-panel__item input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.general-map__track {
+  pointer-events: none;
+}
+
+.general-map__line-path {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.netmap--general .geo-map-frame {
+  flex: 1;
+}
+
 .geo-map-frame__no-terrain p {
   margin: 0;
   max-width: 36rem;

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Flame, GitBranch, Globe, Map as MapIcon, Network } from 'lucide-react'
+import { Flame, GitBranch, Globe, Layers, Map as MapIcon, Network } from 'lucide-react'
 import { PassengerHeatmapMap } from './PassengerHeatmapMap'
 import type { NetworkExport } from '../../types/network'
 import type { RouteResult } from '../../lib/routing/types'
@@ -7,10 +7,11 @@ import { buildNetworkMapData } from '../../lib/maps/buildNetworkMapData'
 import { SchematicNetworkMap } from './SchematicNetworkMap'
 import { TopologyGraphMap } from './TopologyGraphMap'
 import { GeographicNetworkMap } from './GeographicNetworkMap'
+import { GeneralMap } from './GeneralMap'
 import type { LayoutStation } from '../../lib/maps/types'
 import { CollapsibleSection } from '../CollapsibleSection'
 
-type MapMode = 'schematic' | 'topology' | 'geo' | 'heatmap'
+type MapMode = 'schematic' | 'topology' | 'geo' | 'heatmap' | 'general'
 
 interface NetworkMapsPanelProps {
   network: NetworkExport
@@ -72,6 +73,14 @@ function NetworkMapsContent({
         </button>
         <button
           type="button"
+          className={`netmaps-panel__tab ${mode === 'general' ? 'is-active' : ''}`}
+          onClick={() => setMode('general')}
+        >
+          <Layers size={16} />
+          Generalkarte
+        </button>
+        <button
+          type="button"
           className={`netmaps-panel__tab ${mode === 'heatmap' ? 'is-active' : ''}`}
           onClick={() => setMode('heatmap')}
         >
@@ -104,6 +113,8 @@ function NetworkMapsContent({
         {mode === 'topology' &&
           'Netzgraph auf TF2-Koordinaten — echte Proportionen, Norden oben, Hub-Knoten hervorgehoben. 3D-Button für Geländeansicht.'}
         {mode === 'geo' && 'Spielkarte: TF2-Koordinaten (X/Y), Norden oben. 3D-Button für Höhen, Wasser und Untergrund.'}
+        {mode === 'general' &&
+          'Generalkarte: echte Gleisgeometrie und Linien entlang der Schienen (Exporter v1.5+). Layer ein-/ausblenden, 2D/3D mit Zoom, Schwenken und Neigung.'}
         {mode === 'heatmap' && 'Passagier-Heatmap: Linienbreite nach Passagieraufkommen aus dem Export.'}
         {' '}Scrollen zum Zoomen, Ziehen zum Verschieben. Hover für Details.
       </p>
@@ -128,6 +139,17 @@ function NetworkMapsContent({
       )}
       {mode === 'geo' && (
         <GeographicNetworkMap
+          mapData={mapData}
+          boundingBox={boundingBox}
+          terrain={network.terrain}
+          highlightStationIds={highlightStationIds}
+          highlightLineIds={highlightLineIds}
+          onStationClick={onStationPick}
+        />
+      )}
+      {mode === 'general' && (
+        <GeneralMap
+          network={network}
           mapData={mapData}
           boundingBox={boundingBox}
           terrain={network.terrain}
@@ -203,7 +225,7 @@ export function NetworkMapsPanel({
         </div>
         <div>
           <h2>Interaktive Netzpläne</h2>
-          <p>Schematisch, Netzgraph, Spielkarte & Verkehrs-Heatmap</p>
+          <p>Schematisch, Netzgraph, Spielkarte, Generalkarte & Verkehrs-Heatmap</p>
         </div>
         <span className="netmaps-panel__header-badge">{mapData.lines.length} Linien</span>
       </header>

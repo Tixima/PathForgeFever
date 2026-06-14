@@ -1,7 +1,7 @@
 function data()
   return {
     info = {
-      minorVersion = 43,
+      minorVersion = 50,
       severityAdd = "NONE",
       severityRemove = "NONE",
       name = _("PathForgeFever Exporter"),

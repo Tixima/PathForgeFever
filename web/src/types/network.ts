@@ -13,6 +13,7 @@ export interface NetworkMapMeta {
 }
 
 import type { TerrainExport } from './terrain'
+import type { TrackNetworkExport } from './trackNetwork'
 
 export interface NetworkExport {
   generated_by: string
@@ -32,6 +33,7 @@ export interface NetworkExport {
   quality_report: QualityReportEntry[]
   network_map?: NetworkMapMeta
   terrain?: TerrainExport
+  track_network?: TrackNetworkExport
   experimental?: { enabled?: boolean; warning?: string }
   diagnostics?: Array<{ level: string; message: string }>
 }

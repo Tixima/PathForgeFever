@@ -1,4 +1,4 @@
-# PathForgeFever Exporter v1.4.3
+# PathForgeFever Exporter v1.5.0
 
 **Powered by Tixima Gaming**
 
@@ -11,11 +11,14 @@ Immer **alles** – keine wählbaren Teil-Exporte:
 - Linien, Stationen, Routing, Segmente
 - Fahrzeuge
 - Gleise / Terminals (Native Scan + Fallback)
+- **Physisches Schienennetz** (`track_network`) mit abgetasteten Gleis-Polylines (4–16 m)
+- **Linienpfade entlang der Schienen** (`track_network.line_paths`) via Pathfinding
 - Vollständiges Terrain (Höhe, Basishöhe, Oberfläche, Steigung)
 
-## Einzige Einstellung
+## Einstellungen
 
-**Terrain-Raster (m):** 8–64 m (Standard 16 m). Größere Werte = kleinere JSON-Datei.
+- **Terrain-Raster (m):** 8–64 m (Standard 16 m)
+- **Gleis-Abtastung (m):** folgt dem Terrain-Raster-Default (8 m), intern 4–16 m
 
 ## Bedienung
 

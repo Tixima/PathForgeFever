@@ -1,8 +1,8 @@
--- PathForgeFever TF2 Network Exporter - v1.4.3
--- Powered by Tixima Gaming. Non-blocking full export with configurable terrain raster only.
+-- PathForgeFever TF2 Network Exporter - v1.5.0
+-- Powered by Tixima Gaming. Non-blocking full export with configurable terrain raster + rail geometry.
 
-local MOD_VERSION = "1.4.3"
-local SCHEMA_VERSION = 41
+local MOD_VERSION = "1.5.0"
+local SCHEMA_VERSION = 42
 local PROJECT_NAME = "PathForgeFever"
 local BRAND_LINE = "Powered by Tixima Gaming"
 
@@ -13,6 +13,8 @@ local EVENT_EXPORT_START = "export.start"
 local EVENT_EXPORT_CANCEL = "export.cancel"
 
 local ExportJobModule = nil
+local TrackNetworkModule = nil
+
 local function loadExportJobModule()
   if ExportJobModule ~= nil then return ExportJobModule end
   local paths = {
@@ -33,6 +35,26 @@ local function loadExportJobModule()
   error("tixima_export_job.lua konnte nicht geladen werden")
 end
 
+local function loadTrackNetworkModule()
+  if TrackNetworkModule ~= nil then return TrackNetworkModule end
+  local paths = {
+    "mods/tixima_tf2_line_exporter_1/res/config/game_script/tixima_track_network.lua",
+    "res/config/game_script/tixima_track_network.lua",
+    "tixima_track_network.lua",
+  }
+  for _, path in ipairs(paths) do
+    local chunk = loadfile(path)
+    if chunk then
+      local ok, mod = pcall(chunk)
+      if ok and type(mod) == "table" then
+        TrackNetworkModule = mod
+        return TrackNetworkModule
+      end
+    end
+  end
+  return nil
+end
+
 local function safeLoadExportJobModule()
   local ok, mod = pcall(loadExportJobModule)
   if ok and mod then return mod end
@@ -43,6 +65,7 @@ local function safeLoadExportJobModule()
     EXPORT_PHASE = {
       IDLE = "IDLE", QUEUED = "QUEUED", EXPORTING_TOPOLOGY = "EXPORTING_TOPOLOGY",
       EXPORTING_VEHICLES = "EXPORTING_VEHICLES", EXPORTING_TERMINALS = "EXPORTING_TERMINALS",
+      EXPORTING_TRACK_NETWORK = "EXPORTING_TRACK_NETWORK",
       EXPORTING_TERRAIN_BOUNDS = "EXPORTING_TERRAIN_BOUNDS", EXPORTING_TERRAIN_ROWS = "EXPORTING_TERRAIN_ROWS",
       WRITING_FINAL_JSON = "WRITING_FINAL_JSON", DONE = "DONE", ERROR = "ERROR", CANCELLED = "CANCELLED",
     },
@@ -2985,6 +3008,7 @@ local function assembleExportPayload(parts)
   local geojsonPackage = parts.geojsonPackage or {}
   local networkStats = parts.networkStats or {}
   local terrainData = parts.terrainData or {}
+  local trackNetwork = parts.trackNetwork or {}
   local qualityReport = parts.qualityReport or {}
   local diag = parts.diag or {}
   local lineSource = parts.lineSource
@@ -3024,6 +3048,8 @@ local function assembleExportPayload(parts)
       terrain_rows = safeField(terrainData, "rows") or 0,
       terrain_columns = safeField(terrainData, "columns") or 0,
       terrain_resolution_m = safeField(terrainData, "resolution_m") or nil,
+      track_network_edges = safeField(trackNetwork, "edge_count") or #(safeField(trackNetwork, "edges") or {}),
+      track_network_line_paths = safeField(trackNetwork, "line_path_count") or #(safeField(trackNetwork, "line_paths") or {}),
     },
     transport_mode_reference = {
       PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5,
@@ -3050,6 +3076,9 @@ local function assembleExportPayload(parts)
       terrain_height_grid = true,
       terrain_surface_classification = true,
       terrain_slope_grid = true,
+      track_network = true,
+      track_geometry_sampling = true,
+      line_track_paths = true,
       inferred_transport_modes = true,
       native_terminal_track_data = "preferred_from_api.engine.getLine.stops[].terminal_or_component.Line.stops; otherwise v1.3.0 exports boarding_station_id_best_effort and virtual platform display",
       native_segment_travel_times = false,
@@ -3171,6 +3200,7 @@ local function assembleExportPayload(parts)
       }
     },
     terrain = terrainData,
+    track_network = trackNetwork,
     quality_report = qualityReport,
     diagnostics = diag,
     coordinate_system = coordinateSystem,
@@ -3217,6 +3247,7 @@ local function buildExportPayload(exportOptions)
   local geojsonPackage = buildGeoJsonPackage(stationsCanonical, segments)
   local networkStats = buildNetworkStats(lines, stationsCanonical, segments, routingPackage.transfers)
   local terrainData = exportTerrainData(stationGroups, diag)
+  local trackNetwork = buildTrackNetworkPackage(lines, stationGroups, stations, coordinateSystem, exportOptions, diag)
   local qualityReport = buildQualityReport(lines, stations, stationGroups, segments, vehicles, terrainData)
 
   return assembleExportPayload({
@@ -3236,6 +3267,7 @@ local function buildExportPayload(exportOptions)
     geojsonPackage = geojsonPackage,
     networkStats = networkStats,
     terrainData = terrainData,
+    trackNetwork = trackNetwork,
     qualityReport = qualityReport,
     diag = diag,
     lineSource = lineSource,
@@ -3305,6 +3337,87 @@ local function terrainJobDeps(diag)
     TERRAIN_EXPORT_CONFIG = TERRAIN_EXPORT_CONFIG,
     diagRef = diag,
   }
+end
+
+local function trackNetworkDeps(diag)
+  return {
+    eid = eid,
+    safeField = safeField,
+    safeTonumber = safeTonumber,
+    safeLen = safeLen,
+    rawIndex = rawIndex,
+    vecToPlainTable = vecToPlainTable,
+    distance2d = distance2d,
+    distance3d = distance3d,
+    roundCoord = roundCoord,
+    roundedNumber = roundedNumber,
+    clamp01 = clamp01,
+    buildCoordinatePackage = buildCoordinatePackage,
+    getComponent = getComponent,
+    componentType = componentType,
+    diagPush = diagPush,
+  }
+end
+
+local function lineColorMapFromLines(lines)
+  local map = {}
+  for _, line in ipairs(lines or {}) do
+    local id = safeField(line, "id")
+    local dc = safeField(line, "display_color")
+    local hex = safeField(dc, "hex")
+    if id ~= nil and hex ~= nil then
+      map[tostring(id)] = hex
+      map[id] = hex
+    end
+  end
+  return map
+end
+
+local function buildTrackNetworkPackage(lines, stationGroups, stations, coordinateSystem, exportOptions, diag, existingCtx)
+  local TN = loadTrackNetworkModule()
+  if TN == nil then
+    diagPush(diag, "warn", "tixima_track_network.lua not loaded; track_network export skipped")
+    return {
+      schema = "tixima-track-network",
+      schema_version = 1,
+      status = "module_missing",
+      edges = {},
+      line_paths = {},
+      edge_count = 0,
+      line_path_count = 0,
+    }
+  end
+
+  local deps = trackNetworkDeps(diag)
+  local spacing = safeTonumber(safeField(exportOptions, "track_sample_spacing_m"))
+    or safeTonumber(safeField(exportOptions, "terrain_resolution_m"))
+    or 8
+  local trackOptions = { track_sample_spacing_m = spacing }
+
+  if existingCtx ~= nil then
+    TN.setLineInput(existingCtx, {
+      lines = lines,
+      stationGroups = stationGroups,
+      stations = stations,
+      lineColors = lineColorMapFromLines(lines),
+    })
+    return TN.finalize(existingCtx, diag)
+  end
+
+  local jobs = TN.collectTrackJobs(deps, diag)
+  local ctx = TN.createContext(jobs, trackOptions)
+  TN.setLineInput(ctx, {
+    lines = lines,
+    stationGroups = stationGroups,
+    stations = stations,
+    lineColors = lineColorMapFromLines(lines),
+  })
+
+  while not TN.tickExport(ctx, deps, coordinateSystem, diag, TN.EDGES_PER_TICK * 100) do
+    -- sync export: process all edges in one go
+  end
+
+  return TN.finalize(ctx, diag)
 end
 
 local function writeExportStatusMirror()
@@ -3461,24 +3574,57 @@ local function tickAsyncExport()
       local diag = d.diag
       d.stations, d.stationGroups = exportStations(diag)
       d.lines, d.lineSource = exportLines(diag)
-      d.segments = buildSegments(d.lines, diag)
+      job.phase = PHASE.EXPORTING_TERMINALS
+    elseif job.phase == PHASE.EXPORTING_TERMINALS then
+      local d = job.data
+      d.nativeTerminalScan = scanNativeTerminalLineStops(d.lines, d.stationGroups, d.stations, d.diag)
+      d.platformAssignments, d.boardingPoints = buildVirtualPlatformAssignments(d.lines, d.stationGroups, d.stations, d.diag)
+      d.segments = buildSegments(d.lines, d.diag)
       d.routingPackage = buildRoutingAndMapPackage(d.stationGroups, d.lines, d.segments)
       d.coordinateSystem = buildCoordinateSystem(d.stationGroups)
       d.stationsCanonical = buildStationCanonical(d.stationGroups, d.stations, d.lines, d.routingPackage, d.coordinateSystem)
       d.renderPackage = buildRenderPackage(d.lines, d.stationsCanonical, d.segments, d.coordinateSystem)
       d.geojsonPackage = buildGeoJsonPackage(d.stationsCanonical, d.segments)
       d.networkStats = buildNetworkStats(d.lines, d.stationsCanonical, d.segments, d.routingPackage.transfers)
-      job.phase = PHASE.EXPORTING_TERMINALS
-    elseif job.phase == PHASE.EXPORTING_TERMINALS then
-      local d = job.data
-      d.nativeTerminalScan = scanNativeTerminalLineStops(d.lines, d.stationGroups, d.stations, d.diag)
-      d.platformAssignments, d.boardingPoints = buildVirtualPlatformAssignments(d.lines, d.stationGroups, d.stations, d.diag)
       job.phase = PHASE.EXPORTING_VEHICLES
     elseif job.phase == PHASE.EXPORTING_VEHICLES then
       local d = job.data
       d.vehicles, d.vehicleSource, d.vehicleProbe = exportVehicles(d.diag, d.lines)
       d.lineSummaries = buildLineSummaries(d.lines, d.segments, d.vehicles)
-      job.phase = PHASE.EXPORTING_TERRAIN_BOUNDS
+      job.phase = PHASE.EXPORTING_TRACK_NETWORK
+    elseif job.phase == PHASE.EXPORTING_TRACK_NETWORK then
+      local d = job.data
+      local TN = loadTrackNetworkModule()
+      if TN == nil then
+        d.trackNetwork = {
+          schema = "tixima-track-network",
+          schema_version = 1,
+          status = "module_missing",
+          edges = {},
+          line_paths = {},
+        }
+        job.phase = PHASE.EXPORTING_TERRAIN_BOUNDS
+      else
+        if job.trackNetwork == nil then
+          local deps = trackNetworkDeps(d.diag)
+          local spacing = safeTonumber(safeField(opts, "track_sample_spacing_m"))
+            or safeTonumber(safeField(opts, "terrain_resolution_m")) or 8
+          local jobs = TN.collectTrackJobs(deps, d.diag)
+          job.trackNetwork = TN.createContext(jobs, { track_sample_spacing_m = spacing })
+          TN.setLineInput(job.trackNetwork, {
+            lines = d.lines,
+            stationGroups = d.stationGroups,
+            stations = d.stations,
+            lineColors = lineColorMapFromLines(d.lines),
+          })
+        end
+        local done = TN.tickExport(job.trackNetwork, trackNetworkDeps(d.diag), d.coordinateSystem, d.diag, TN.EDGES_PER_TICK)
+        if done then
+          d.trackNetwork = buildTrackNetworkPackage(d.lines, d.stationGroups, d.stations, d.coordinateSystem, opts, d.diag, job.trackNetwork)
+          job.trackNetwork = nil
+          job.phase = PHASE.EXPORTING_TERRAIN_BOUNDS
+        end
+      end
     elseif job.phase == PHASE.EXPORTING_TERRAIN_BOUNDS then
       local d = job.data
       job.terrain = EJ.initTerrainContext(d.stationGroups, opts, terrainJobDeps(d.diag))
@@ -3530,6 +3676,7 @@ local function tickAsyncExport()
         geojsonPackage = d.geojsonPackage,
         networkStats = d.networkStats,
         terrainData = d.terrainData,
+        trackNetwork = d.trackNetwork,
         qualityReport = d.qualityReport,
         diag = d.diag,
         lineSource = d.lineSource,
