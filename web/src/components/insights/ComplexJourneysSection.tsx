@@ -371,6 +371,7 @@ export function ComplexJourneysSection({
           network={network}
           entries={scan.entries}
           boundingBox={network.network_map?.bounding_box}
+          scale={scale}
         />
       )}
     </section>

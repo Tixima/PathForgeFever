@@ -15,7 +15,7 @@ import type { ScaleSettings } from '../../lib/scale'
 import type { StationOption } from '../../lib/routing/types'
 import { buildStationIntelIndex, type StationConnection } from '../../lib/station/stationIntel'
 import { DeparturesBoard } from './DeparturesBoard'
-import { PlatformBoard } from './PlatformBoard'
+import { StationTrackView } from './StationTrackView'
 import { shapeLabel } from '../../lib/maps/lineTopology'
 import { StationAutocomplete } from '../StationAutocomplete'
 import { FavoriteButton } from '../FavoriteButton'
@@ -256,6 +256,21 @@ export function InsideBahnhofPanel({
         </div>
       </motion.article>
 
+      <StationTrackView
+        network={network}
+        stationGroupId={intel.id}
+        stationName={intel.name}
+        onSelectNextStop={(nextStopId) => {
+          const dest = stations.find((s) => s.id === nextStopId)
+          if (!dest) return
+          if (onPlanTrip) onPlanTrip(selectedStation, dest)
+          else {
+            onPlanFrom(selectedStation)
+            onPlanTo(dest)
+          }
+        }}
+      />
+
       <DeparturesBoard
         network={network}
         intel={intel}
@@ -269,12 +284,6 @@ export function InsideBahnhofPanel({
             onPlanTo(dest)
           }
         }}
-      />
-
-      <PlatformBoard
-        network={network}
-        stationGroupId={intel.id}
-        stationName={intel.name}
       />
 
       <div className="inside-bahnhof__grid">

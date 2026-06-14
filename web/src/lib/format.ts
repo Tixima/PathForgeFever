@@ -57,8 +57,15 @@ export function formatArrivalTime(durationSeconds: number): string {
 }
 
 export function formatDelta(seconds: number): string {
+  return formatRouteDelta(seconds)
+}
+
+/** Zeitdifferenz zur Empfehlung — skaliert für Realzeit-Anzeige. */
+export function formatRouteDelta(seconds: number): string {
   if (seconds <= 0) return 'Schnellste'
+  if (seconds >= 3600) return `+${formatDuration(seconds)}`
   const minutes = Math.ceil(seconds / 60)
+  if (minutes >= 60) return `+${formatDuration(seconds)}`
   return `+${minutes} Min`
 }
 

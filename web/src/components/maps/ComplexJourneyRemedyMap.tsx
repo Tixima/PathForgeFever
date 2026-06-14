@@ -24,20 +24,14 @@ export function ComplexJourneyRemedyMap({
   const selected =
     proposals.find((p) => p.id === selectedId) ?? proposals[0] ?? null
 
-  const focusStations = useMemo(() => {
-    if (!selected) return mapData.stations
-    const idSet = new Set(selected.highlightStationIds)
-    return mapData.stations.filter((s) => idSet.has(s.id))
-  }, [mapData.stations, selected])
-
   const layout = useMemo(
     () =>
-      buildGeographicLayout(focusStations.length > 0 ? focusStations : mapData.stations, {
+      buildGeographicLayout(mapData.stations, {
         boundingBox,
-        fitToPoints: focusStations.length > 0,
+        fitToPoints: false,
         preserveAspectRatio: true,
       }),
-    [focusStations, mapData.stations, boundingBox],
+    [mapData.stations, boundingBox],
   )
 
   const posById = useMemo(
@@ -47,6 +41,15 @@ export function ComplexJourneyRemedyMap({
 
   const routePolyline = useMemo(() => {
     if (!selected) return ''
+    return selected.referenceStationIds
+      .map((id) => posById.get(id))
+      .filter(Boolean)
+      .map((p) => `${p!.x},${p!.y}`)
+      .join(' ')
+  }, [selected, posById])
+
+  const proposalPolyline = useMemo(() => {
+    if (!selected) return ''
     return selected.stationIds
       .map((id) => posById.get(id))
       .filter(Boolean)
@@ -54,8 +57,14 @@ export function ComplexJourneyRemedyMap({
       .join(' ')
   }, [selected, posById])
 
-  const highlightSet = useMemo(
-    () => new Set(selected?.highlightStationIds ?? []),
+  const highlightSet = useMemo(() => {
+    const ids = new Set(selected?.highlightStationIds ?? [])
+    for (const id of selected?.referenceStationIds ?? []) ids.add(id)
+    return ids
+  }, [selected])
+
+  const transferSet = useMemo(
+    () => new Set(selected?.referenceTransferStationIds ?? []),
     [selected],
   )
 
@@ -88,7 +97,6 @@ export function ComplexJourneyRemedyMap({
               x2={p2.x}
               y2={p2.y}
               className="complex-remedy-map__edge"
-              stroke={edge.lineColor}
             />
           )
         })}
@@ -97,64 +105,87 @@ export function ComplexJourneyRemedyMap({
           <polyline points={routePolyline} className="complex-remedy-map__route" fill="none" />
         )}
 
+        {selected && proposalPolyline && (
+          <polyline points={proposalPolyline} className="complex-remedy-map__proposal-line" fill="none" />
+        )}
+
         {selected?.segments.map((seg) => {
           const p1 = posById.get(seg.fromId)
           const p2 = posById.get(seg.toId)
           if (!p1 || !p2) return null
-          const isProposal = seg.status === 'missing' || seg.transferAfter
           const isSelected = selected.id === selectedId || !selectedId
 
           return (
             <g key={`${seg.fromId}-${seg.toId}`}>
-              {isProposal && (
-                <line
-                  x1={p1.x}
-                  y1={p1.y}
-                  x2={p2.x}
-                  y2={p2.y}
-                  className="complex-remedy-map__proposal-hit"
-                  onClick={() => onSelect(selected.id)}
-                />
-              )}
               <line
                 x1={p1.x}
                 y1={p1.y}
                 x2={p2.x}
                 y2={p2.y}
-                className={`complex-remedy-map__segment ${isProposal ? 'is-missing' : 'is-existing'} ${isSelected ? 'is-active' : ''}`}
-                markerEnd={isProposal && isSelected ? 'url(#remedyArrow)' : undefined}
+                className="complex-remedy-map__proposal-hit"
+                onClick={() => onSelect(selected.id)}
+              />
+              <line
+                x1={p1.x}
+                y1={p1.y}
+                x2={p2.x}
+                y2={p2.y}
+                className={`complex-remedy-map__segment is-missing ${isSelected ? 'is-active' : ''}`}
+                markerEnd={isSelected ? 'url(#remedyArrow)' : undefined}
               />
             </g>
           )
         })}
 
-        {layout.stations.map((station) => (
-          <RemedyStationDot
-            key={station.id}
-            station={station}
-            highlighted={highlightSet.has(station.id)}
-            isTerminal={
-              selected != null &&
-              (station.id === selected.fromId || station.id === selected.toId)
-            }
-          />
-        ))}
+        {layout.stations.map((station) => {
+          const highlighted = highlightSet.has(station.id)
+          const isTransfer = transferSet.has(station.id)
+          const isTerminal =
+            selected != null &&
+            (station.id === selected.fromId || station.id === selected.toId)
+
+          if (!highlighted && !isTerminal) {
+            return (
+              <circle
+                key={station.id}
+                cx={station.x}
+                cy={station.y}
+                r={station.interchange ? 2.5 : 2}
+                className="complex-remedy-map__station-dot complex-remedy-map__station-dot--bg"
+              />
+            )
+          }
+
+          return (
+            <RemedyStationDot
+              key={station.id}
+              station={station}
+              highlighted={highlighted}
+              isTerminal={isTerminal}
+              isTransfer={isTransfer}
+            />
+          )
+        })}
 
         <CompassRose x={layout.width - 56} y={56} size={48} />
       </ZoomableMapViewport>
 
       <div className="complex-remedy-map__legend">
         <span className="complex-remedy-map__legend-item">
-          <i className="complex-remedy-map__swatch complex-remedy-map__swatch--route" />
-          Schnellste Route (Ist)
+          <i className="complex-remedy-map__swatch complex-remedy-map__swatch--network" />
+          Bestehendes Netz
         </span>
         <span className="complex-remedy-map__legend-item">
-          <i className="complex-remedy-map__swatch complex-remedy-map__swatch--existing" />
-          Bestehende Teilstrecke
+          <i className="complex-remedy-map__swatch complex-remedy-map__swatch--route" />
+          Ist-Route (Umsteiger)
+        </span>
+        <span className="complex-remedy-map__legend-item">
+          <i className="complex-remedy-map__swatch complex-remedy-map__swatch--transfer" />
+          Umstieg
         </span>
         <span className="complex-remedy-map__legend-item">
           <i className="complex-remedy-map__swatch complex-remedy-map__swatch--proposal" />
-          Fehlende Teilstrecke (Neubau)
+          Neue Linie (Neubau)
         </span>
       </div>
     </div>
@@ -165,30 +196,40 @@ function RemedyStationDot({
   station,
   highlighted,
   isTerminal,
+  isTransfer,
 }: {
   station: LayoutStation
   highlighted: boolean
   isTerminal: boolean
+  isTransfer?: boolean
 }) {
-  const r = isTerminal ? 9 : highlighted ? 7 : station.interchange ? 6 : 4
+  const r = isTerminal ? 9 : isTransfer ? 8 : highlighted ? 7 : station.interchange ? 6 : 4
 
   return (
     <g className="complex-remedy-map__station">
       {isTerminal && (
         <circle cx={station.x} cy={station.y} r={r + 5} className="complex-remedy-map__endpoint-ring" />
       )}
-      {highlighted && !isTerminal && (
+      {isTransfer && !isTerminal && (
+        <circle cx={station.x} cy={station.y} r={r + 4} className="complex-remedy-map__transfer-ring" />
+      )}
+      {highlighted && !isTerminal && !isTransfer && (
         <circle cx={station.x} cy={station.y} r={r + 3} className="complex-remedy-map__station-ring" />
       )}
       <circle
         cx={station.x}
         cy={station.y}
         r={r}
-        className={`complex-remedy-map__station-dot ${isTerminal ? 'is-endpoint' : ''}`}
+        className={`complex-remedy-map__station-dot ${isTerminal ? 'is-endpoint' : ''} ${isTransfer ? 'is-transfer' : ''}`}
       />
-      {(isTerminal || highlighted) && (
+      {(isTerminal || isTransfer || highlighted) && (
         <text x={station.x} y={station.y - r - 7} className="complex-remedy-map__station-label">
           {station.name}
+        </text>
+      )}
+      {isTransfer && (
+        <text x={station.x} y={station.y + r + 14} className="complex-remedy-map__transfer-label">
+          Umstieg
         </text>
       )}
     </g>

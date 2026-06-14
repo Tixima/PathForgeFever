@@ -7,6 +7,7 @@ import type { TransferAccessibilityDetail } from '../../lib/platform/accessibleR
 import { formatDuration } from '../../lib/format'
 import { getTransferDisplaySeconds } from '../../lib/scale'
 import { getTransferTracks } from '../../lib/platform/platformIntel'
+import { filterTransferLineDirections } from '../../lib/station/hubDirectionFilter'
 import { HubStopDirections } from './HubStopDirections'
 
 interface TransferConnectionProps {
@@ -32,7 +33,9 @@ export function TransferConnection({
 }: TransferConnectionProps) {
   const tracks = getTransferTracks(network, arrivalLeg, departureLeg)
   const transferDisplaySeconds = getTransferDisplaySeconds(transferTimeSeconds)
-  const lineDirections = station?.lineDirections ?? []
+  const lineDirections = filterTransferLineDirections(station?.lineDirections ?? [], {
+    excludeLineIds: [arrivalLeg.lineId, departureLeg.lineId],
+  })
   const samePlatform =
     accessibility?.samePlatform ??
     Boolean(
@@ -148,7 +151,7 @@ export function TransferConnection({
 
       {lineDirections.length > 0 && (
         <div className="transfer-connection__hub">
-          <span className="transfer-connection__hub-label">Weitere Linien am Bahnhof</span>
+          <span className="transfer-connection__hub-label">Weitere Umsteigeoptionen</span>
           <HubStopDirections directions={lineDirections} maxVisible={6} compact />
         </div>
       )}

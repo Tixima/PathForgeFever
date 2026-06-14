@@ -5,12 +5,15 @@ interface HubStopDirectionsProps {
   directions: LineDirectionAtStop[]
   maxVisible?: number
   compact?: boolean
+  /** Eigene Linie in der Liste — dezenter hervorgehoben (Alternative Richtung). */
+  highlightLineId?: number
 }
 
 export function HubStopDirections({
   directions,
   maxVisible = 4,
   compact = false,
+  highlightLineId,
 }: HubStopDirectionsProps) {
   if (directions.length === 0) return null
 
@@ -22,7 +25,7 @@ export function HubStopDirections({
       {visible.map((line) => (
         <div
           key={`${line.lineId}:${line.stopIndex}:${line.prevStop ?? ''}:${line.nextStop ?? ''}`}
-          className="hub-strip-line"
+          className={`hub-strip-line${highlightLineId === line.lineId ? ' hub-strip-line--same-line' : ''}`}
           title={`${line.lineName}: ${line.prevStop ?? '—'} ↔ ${line.nextStop ?? '—'}`}
         >
           <span

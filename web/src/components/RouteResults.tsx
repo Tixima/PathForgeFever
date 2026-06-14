@@ -166,6 +166,7 @@ export function RouteResults({
               <AlternativeRoutes
                 routes={alternatives}
                 selectedId={selectedRoute.id}
+                primaryRoute={selectedRoute}
                 scale={scale}
                 onSelect={onSelectRoute}
               />

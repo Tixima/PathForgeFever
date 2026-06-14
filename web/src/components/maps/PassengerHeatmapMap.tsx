@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
-import { buildSchematicLayout } from '../../lib/maps/schematicLayout'
+import { buildLineSegmentPaths, buildSchematicLayout } from '../../lib/maps/schematicLayout'
 import type { LayoutStation, MapHover, NetworkMapData } from '../../lib/maps/types'
 import { MapTooltip } from './MapTooltip'
 import { ZoomableMapViewport } from './ZoomableMapViewport'
@@ -32,9 +32,9 @@ export function PassengerHeatmapMap({
     return max
   }, [passengerByLineId])
 
-  const posById = useMemo(
-    () => new Map(layout.stations.map((s) => [s.id, { x: s.x, y: s.y }])),
-    [layout.stations],
+  const segmentPaths = useMemo(
+    () => buildLineSegmentPaths(mapData.lines, layout.lineLocalX, layout.lineTracks),
+    [mapData.lines, layout.lineLocalX, layout.lineTracks],
   )
 
   return (
@@ -44,24 +44,19 @@ export function PassengerHeatmapMap({
         contentHeight={layout.height}
         viewBox={layout.viewBox}
       >
-        {mapData.lines.map((line) => {
+        {segmentPaths.map((seg) => {
+          const line = mapData.lines.find((l) => l.id === seg.lineId)
+          if (!line) return null
+
           const pax = passengerByLineId.get(line.id) ?? 0
           const intensity = 0.25 + (pax / maxPax) * 0.75
           const width = 2 + (pax / maxPax) * 10
           const active = hoveredLineId === line.id
 
-          const points = line.layoutStationIds
-            .map((id) => posById.get(id))
-            .filter((p): p is { x: number; y: number } => !!p)
-
-          if (points.length < 2) return null
-
-          const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
-
           return (
-            <g key={line.id}>
+            <g key={`${line.id}-${seg.direction}`}>
               <path
-                d={d}
+                d={seg.path}
                 fill="none"
                 stroke={line.color}
                 strokeWidth={width + 6}
@@ -71,7 +66,7 @@ export function PassengerHeatmapMap({
                 style={{ filter: 'blur(4px)' }}
               />
               <path
-                d={d}
+                d={seg.path}
                 fill="none"
                 stroke={line.color}
                 strokeWidth={width}

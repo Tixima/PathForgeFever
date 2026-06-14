@@ -2,16 +2,17 @@ import { useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
 import { motion } from 'framer-motion'
 import type { StationOption } from '../../lib/routing/types'
 import type { LineDirectionAtStop } from '../../lib/station/stationLineDirections'
+import { filterTransferLineDirections } from '../../lib/station/hubDirectionFilter'
 import { FloatingHubTooltip } from './FloatingHubTooltip'
 import { HubStopDirections } from './HubStopDirections'
 
 interface LegStopStripProps {
   stops: string[]
   lineColor: string
+  lineId: number
   fromName: string
   toName: string
   stations: StationOption[]
-  /** Halte, an denen nicht ausgestiegen werden soll (Durchfahrt vor Umstieg). */
   staySeatedIndices?: number[]
 }
 
@@ -29,14 +30,24 @@ function getStopKind(index: number, total: number): StopKind {
   return 'stop'
 }
 
-function getHubDirections(station: StationOption | undefined): LineDirectionAtStop[] {
+function getTransferOptions(
+  station: StationOption | undefined,
+  lineId: number,
+  legStops: string[],
+  stopIndex: number,
+): LineDirectionAtStop[] {
   if (!station?.interchange) return []
-  return station.lineDirections ?? []
+  return filterTransferLineDirections(station.lineDirections ?? [], {
+    currentLineId: lineId,
+    legStops,
+    stopIndex,
+  })
 }
 
 export function LegStopStrip({
   stops,
   lineColor,
+  lineId,
   fromName,
   toName,
   stations,
@@ -57,15 +68,15 @@ export function LegStopStrip({
 
   const compact = stops.length > 7
 
-  function showHubTooltip(name: string, anchor: HTMLElement) {
+  function showHubTooltip(name: string, anchor: HTMLElement, stopIndex: number) {
     const station = stationByName.get(name)
-    const lineDirections = getHubDirections(station)
+    const lineDirections = getTransferOptions(station, lineId, stops, stopIndex)
     if (lineDirections.length === 0) return
     setHoveredHub({ name, lineDirections, anchor })
   }
 
-  function handleHubEnter(name: string, event: MouseEvent<HTMLElement>) {
-    showHubTooltip(name, event.currentTarget)
+  function handleHubEnter(name: string, stopIndex: number, event: MouseEvent<HTMLElement>) {
+    showHubTooltip(name, event.currentTarget, stopIndex)
   }
 
   return (
@@ -85,7 +96,7 @@ export function LegStopStrip({
             {stops.map((name, index) => {
               const kind = getStopKind(index, stops.length)
               const station = stationByName.get(name)
-              const lineDirections = getHubDirections(station)
+              const lineDirections = getTransferOptions(station, lineId, stops, index)
               const isHub = lineDirections.length > 0
               const isHovered = hoveredHub?.name === name
               const staySeated = staySeatedSet.has(index)
@@ -97,9 +108,9 @@ export function LegStopStrip({
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.03, duration: 0.22 }}
-                  onMouseEnter={(e) => isHub && handleHubEnter(name, e)}
+                  onMouseEnter={(e) => isHub && handleHubEnter(name, index, e)}
                   onMouseLeave={() => isHub && setHoveredHub(null)}
-                  onFocus={(e) => isHub && showHubTooltip(name, e.currentTarget)}
+                  onFocus={(e) => isHub && showHubTooltip(name, e.currentTarget, index)}
                   onBlur={() => isHub && setHoveredHub(null)}
                   tabIndex={isHub ? 0 : undefined}
                   title={staySeated ? 'Nicht aussteigen — Umstieg erst beim nächsten Halt hier' : undefined}
@@ -112,6 +123,7 @@ export function LegStopStrip({
                       directions={lineDirections}
                       maxVisible={compact ? 2 : 3}
                       compact={compact}
+                      highlightLineId={lineId}
                     />
                   )}
                 </motion.div>

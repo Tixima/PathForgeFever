@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import {
   buildLineSegmentPaths,
+  buildLineStopMarkers,
   buildSchematicLayout,
-  buildStationConnectors,
   getLayoutPadding,
   getLineLocalX,
   getLineTrackY,
@@ -27,7 +27,7 @@ export function SchematicNetworkMap({
 }: SchematicNetworkMapProps) {
   const [hover, setHover] = useState<MapHover | null>(null)
   const [hoveredLineId, setHoveredLineId] = useState<number | null>(null)
-  const [hoveredStationId, setHoveredStationId] = useState<number | null>(null)
+  const [hoveredStopKey, setHoveredStopKey] = useState<string | null>(null)
 
   const layout = useMemo(
     () => buildSchematicLayout(mapData.stations, mapData.lines),
@@ -36,25 +36,14 @@ export function SchematicNetworkMap({
 
   const { padX } = getLayoutPadding()
 
-  const posById = useMemo(
-    () => new Map(layout.stations.map((s) => [s.id, { x: s.x, y: s.y }])),
-    [layout.stations],
-  )
-
   const segmentPaths = useMemo(
     () => buildLineSegmentPaths(mapData.lines, layout.lineLocalX, layout.lineTracks),
     [mapData.lines, layout.lineLocalX, layout.lineTracks],
   )
 
-  const connectors = useMemo(
-    () =>
-      buildStationConnectors(
-        mapData.lines,
-        layout.lineLocalX,
-        layout.lineTracks,
-        posById,
-      ),
-    [mapData.lines, layout.lineLocalX, layout.lineTracks, posById],
+  const lineStops = useMemo(
+    () => buildLineStopMarkers(mapData.lines, layout.lineLocalX, layout.lineTracks),
+    [mapData.lines, layout.lineLocalX, layout.lineTracks],
   )
 
   const trackLines = useMemo(
@@ -77,6 +66,37 @@ export function SchematicNetworkMap({
   )
 
   const lineById = useMemo(() => new Map(mapData.lines.map((l) => [l.id, l])), [mapData.lines])
+  const stationById = mapData.stationById
+
+  const hubLabelPositions = useMemo(() => {
+    const groups = new Map<
+      number,
+      { minY: number; maxY: number; station: LayoutStation }
+    >()
+
+    for (const stop of lineStops) {
+      const station = stationById.get(stop.stationId)
+      if (!station) continue
+      const existing = groups.get(stop.stationId)
+      if (!existing) {
+        groups.set(stop.stationId, {
+          minY: stop.y,
+          maxY: stop.y,
+          station: { ...station, x: stop.x, y: stop.y },
+        })
+        continue
+      }
+      existing.minY = Math.min(existing.minY, stop.y)
+      existing.maxY = Math.max(existing.maxY, stop.y)
+    }
+
+    return [...groups.values()]
+      .filter((g) => g.station.interchange || g.maxY - g.minY > 8)
+      .map((g) => ({
+        station: g.station,
+        labelY: g.minY - 12,
+      }))
+  }, [lineStops, stationById])
 
   const highlightStationSet = useMemo(() => new Set(highlightStationIds), [highlightStationIds])
   const highlightLineSet = useMemo(() => new Set(highlightLineIds), [highlightLineIds])
@@ -94,9 +114,9 @@ export function SchematicNetworkMap({
         {trackLines.map(({ line, y }) => (
           <g key={`track-${line.id}`}>
             <line
-              x1={padX - 40}
+              x1={padX - 32}
               y1={y}
-              x2={layout.width - padX + 40}
+              x2={layout.width - padX + 32}
               y2={y}
               className="netmap__track-guide"
               stroke={line.color}
@@ -123,7 +143,7 @@ export function SchematicNetworkMap({
                 d={seg.path}
                 className="netmap__line-glow"
                 stroke={line.color}
-                style={{ opacity: dim ? 0.04 : active ? 0.45 : 0.15 }}
+                style={{ opacity: dim ? 0.04 : active ? 0.4 : 0.12 }}
               />
               <path
                 d={seg.path}
@@ -142,87 +162,88 @@ export function SchematicNetworkMap({
                 d={seg.path}
                 className="netmap__line-path"
                 stroke={line.color}
-                style={{ opacity: dim ? 0.15 : active ? 1 : 0.85 }}
+                strokeWidth={active ? 4 : 3}
+                style={{ opacity: dim ? 0.2 : active ? 1 : 0.88 }}
               />
             </g>
           )
         })}
 
-        {connectors.map((conn) => {
-          const line = lineById.get(conn.lineId)
-          if (!line) return null
-          const active = hoveredLineId === conn.lineId || highlightLineSet.has(conn.lineId)
-          const dim = dimLines && !active
+        {lineStops.map((stop) => {
+          const line = lineById.get(stop.lineId)
+          const station = stationById.get(stop.stationId)
+          if (!line || !station) return null
 
-          return (
-            <line
-              key={`conn-${conn.lineId}-${conn.stationId}`}
-              x1={conn.trackX}
-              y1={conn.trackY}
-              x2={conn.nodeX}
-              y2={conn.nodeY}
-              className="netmap__station-connector"
-              stroke={line.color}
-              style={{ opacity: dim ? 0.1 : active ? 0.55 : 0.28 }}
-            />
-          )
-        })}
-
-        {layout.stations.map((station) => {
-          const highlighted = highlightStationSet.has(station.id)
-          const isHovered = hoveredStationId === station.id
+          const stopKey = `${stop.lineId}-${stop.stationId}`
+          const lineActive = hoveredLineId === stop.lineId || highlightLineSet.has(stop.lineId)
+          const stopHovered = hoveredStopKey === stopKey
+          const dim = dimLines && !lineActive
+          const isTerminus = terminusIds.has(stop.stationId)
           const isHub = station.interchange || station.lineIds.length > 1
-          const isTerminus = terminusIds.has(station.id)
-          const showLabel = isHovered || highlighted || isHub || isTerminus
-          const r = isTerminus ? 10 : isHub ? 9 : highlighted ? 8 : 6
+          const r = isTerminus ? 5 : isHub ? 4.5 : 3.5
+
+          const layoutStation: LayoutStation = {
+            ...station,
+            x: stop.x,
+            y: stop.y,
+          }
 
           return (
             <g
-              key={station.id}
+              key={stopKey}
               className="netmap__station-group"
               onMouseEnter={() => {
-                setHoveredStationId(station.id)
-                setHover({ type: 'station', station })
+                setHoveredStopKey(stopKey)
+                setHoveredLineId(stop.lineId)
+                setHover({ type: 'station', station: layoutStation })
               }}
               onMouseLeave={() => {
-                setHoveredStationId(null)
+                setHoveredStopKey(null)
+                setHoveredLineId(null)
                 setHover(null)
               }}
-              onClick={() => onStationClick?.(station)}
+              onClick={() => onStationClick?.(layoutStation)}
             >
-              <circle cx={station.x} cy={station.y} r={r + 16} className="netmap__station-hit" />
-              {isTerminus && (
-                <rect
-                  x={station.x - r - 3}
-                  y={station.y - r - 3}
-                  width={(r + 3) * 2}
-                  height={(r + 3) * 2}
-                  className="netmap__terminus-marker"
-                  transform={`rotate(45 ${station.x} ${station.y})`}
-                />
-              )}
-              {isHub && !isTerminus && (
-                <circle cx={station.x} cy={station.y} r={r + 4} className="netmap__station-hub-ring" />
-              )}
-              {highlighted && (
-                <circle cx={station.x} cy={station.y} r={r + 7} className="netmap__station-highlight-ring" />
-              )}
               <circle
-                cx={station.x}
-                cy={station.y}
-                r={r}
-                className={`netmap__station netmap__station--schematic ${isHub ? 'netmap__station--hub' : ''} ${isHovered ? 'is-hovered' : ''}`}
+                cx={stop.x}
+                cy={stop.y}
+                r={r + 10}
+                className="netmap__station-hit"
+                style={{ opacity: dim ? 0.35 : 1 }}
               />
-              {showLabel && (
-                <text
-                  x={station.x}
-                  y={station.y - r - 12}
-                  className={`netmap__station-label netmap__station-label--large ${isHub ? 'netmap__station-label--hub' : ''}`}
-                >
-                  {station.name}
-                </text>
-              )}
+              <circle
+                cx={stop.x}
+                cy={stop.y}
+                r={r}
+                fill={line.color}
+                stroke="rgba(15,23,42,0.85)"
+                strokeWidth={1.5}
+                className={`netmap__station netmap__station--schematic ${stopHovered ? 'is-hovered' : ''}`}
+                style={{ opacity: dim ? 0.25 : 1 }}
+              />
             </g>
+          )
+        })}
+
+        {hubLabelPositions.map(({ station, labelY }) => {
+          const highlighted = highlightStationSet.has(station.id)
+          const show =
+            highlighted ||
+            hoveredStopKey?.endsWith(`-${station.id}`) ||
+            station.interchange
+
+          if (!show) return null
+
+          return (
+            <text
+              key={`label-${station.id}`}
+              x={station.x}
+              y={labelY}
+              textAnchor="middle"
+              className={`netmap__station-label netmap__station-label--large ${station.interchange ? 'netmap__station-label--hub' : ''}`}
+            >
+              {station.name}
+            </text>
           )
         })}
       </ZoomableMapViewport>
@@ -251,22 +272,22 @@ function LineEndLabels({
   const end = lastId ? mapData.stationById.get(lastId) : undefined
   const startX = firstId ? getLineLocalX(line.id, firstId, lineLocalX) : undefined
   const endX = lastId ? getLineLocalX(line.id, lastId, lineLocalX) : undefined
-  const label = line.name.replace('Linie ', 'L')
+  const label = line.name.replace(/^Linie\s*/i, 'L')
 
   return (
     <g className="netmap__line-ends">
       {startX !== undefined && start && (
         <g>
           <rect
-            x={startX - 56}
-            y={trackY - 48}
-            width={112}
-            height={20}
-            rx={5}
+            x={startX - 52}
+            y={trackY - 42}
+            width={104}
+            height={18}
+            rx={4}
             fill={line.color}
             opacity={0.92}
           />
-          <text x={startX} y={trackY - 34} className="netmap__line-end-text">
+          <text x={startX} y={trackY - 29} className="netmap__line-end-text">
             {label} · {start.name}
           </text>
         </g>
@@ -274,15 +295,15 @@ function LineEndLabels({
       {endX !== undefined && end && lastId !== firstId && (
         <g>
           <rect
-            x={endX - 56}
-            y={trackY + 30}
-            width={112}
-            height={20}
-            rx={5}
+            x={endX - 52}
+            y={trackY + 26}
+            width={104}
+            height={18}
+            rx={4}
             fill={line.color}
             opacity={0.72}
           />
-          <text x={endX} y={trackY + 44} className="netmap__line-end-text">
+          <text x={endX} y={trackY + 39} className="netmap__line-end-text">
             {end.name}
           </text>
         </g>

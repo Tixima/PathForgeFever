@@ -417,6 +417,96 @@ function annotateDeltas(routes: RouteResult[]): RouteResult[] {
   }))
 }
 
+interface AccessibleRouteBundle {
+  compromise: RouteResult | null
+  strict: RouteResult | null
+}
+
+function findAccessibleRouteBundle(
+  network: NetworkExport,
+  graph: RoutingGraph,
+  fromId: number,
+  toId: number,
+  criterion: RouteCriterion,
+  waypoints: number[],
+  hasVias: boolean,
+): AccessibleRouteBundle {
+  const platformIndex = buildRoutingPlatformIndex(network)
+  const base: DijkstraOptions = {
+    accessible: true,
+    platformIndex,
+    network,
+  }
+
+  const searchAcc = (opts: DijkstraOptions = {}) =>
+    hasVias
+      ? findRouteThroughWaypoints(network, waypoints, criterion, { ...base, ...opts })
+      : dijkstra(graph, fromId, toId, criterion, { ...base, ...opts })
+
+  const strictNoStay = searchAcc({ accessibleStrict: true, avoidStaySeated: true })
+  const strictAllowStay = searchAcc({ accessibleStrict: true, avoidStaySeated: false })
+  const compromise = searchAcc({ accessibleStrict: false })
+
+  const zeroChangeWithoutStaySeated = Boolean(strictNoStay)
+  const zeroChangeRouteExists = Boolean(strictNoStay || strictAllowStay)
+
+  const enrich = (route: RouteResult | null): RouteResult | null => {
+    if (!route) return null
+    return {
+      ...route,
+      accessibility: analyzeRouteAccessibility(network, route, {
+        requested: true,
+        zeroChangeRouteExists,
+        zeroChangeWithoutStaySeated,
+      }),
+    }
+  }
+
+  return {
+    compromise: enrich(compromise),
+    strict: enrich(strictNoStay ?? strictAllowStay),
+  }
+}
+
+function injectAccessibleAlternatives(
+  network: NetworkExport,
+  graph: RoutingGraph,
+  fromId: number,
+  toId: number,
+  criterion: RouteCriterion,
+  waypoints: number[],
+  hasVias: boolean,
+  collected: RouteResult[],
+  seen: Set<string>,
+): void {
+  const { compromise, strict } = findAccessibleRouteBundle(
+    network,
+    graph,
+    fromId,
+    toId,
+    criterion,
+    waypoints,
+    hasVias,
+  )
+
+  const pushUnique = (route: RouteResult | null, extraTags: string[]) => {
+    if (!route) return
+    const sig = routeSignature(route)
+    if (seen.has(sig)) return
+    seen.add(sig)
+    collected.push({ ...route, tags: [...route.tags, ...extraTags, 'alternative'] })
+  }
+
+  if (compromise) {
+    const alsoStrict = strict && routeSignature(strict) === routeSignature(compromise)
+    pushUnique(compromise, alsoStrict ? ['barrierefrei-strikt'] : ['barrierefrei'])
+  }
+
+  if (strict && (!compromise || routeSignature(strict) !== routeSignature(compromise))) {
+    pushUnique(strict, ['barrierefrei-strikt'])
+  }
+}
+
 export function findRouteAlternatives(
   network: NetworkExport,
   fromId: number,
@@ -557,6 +647,20 @@ export function findRouteAlternatives(
     }
   }
 
+  if (!accessible) {
+    injectAccessibleAlternatives(
+      network,
+      graph,
+      fromId,
+      toId,
+      criterion,
+      waypoints,
+      hasVias,
+      collected,
+      seen,
+    )
+  }
+
   let annotated = annotateDeltas(collected)
   if (displayStrict) {
     annotated = annotated.filter((route) => route.accessibility?.fullySamePlatform)
@@ -567,6 +671,14 @@ export function findRouteAlternatives(
   const alternatives = annotated.filter((r) => r.id !== primaryRoute.id)
 
   alternatives.sort((a, b) => {
+    const accessibleRank = (route: RouteResult) => {
+      if (route.tags.includes('barrierefrei-strikt')) return 0
+      if (route.tags.includes('barrierefrei')) return 1
+      return 2
+    }
+    const rankDiff = accessibleRank(a) - accessibleRank(b)
+    if (rankDiff !== 0) return rankDiff
+
     const aZero = a.accessibility?.fullySamePlatform ? 0 : 1
     const bZero = b.accessibility?.fullySamePlatform ? 0 : 1
     if (aZero !== bZero) return aZero - bZero

@@ -118,6 +118,7 @@ export function RouteLegCard({
       <LegStopStrip
         stops={leg.stops}
         lineColor={leg.lineColor}
+        lineId={leg.lineId}
         fromName={leg.fromStationName}
         toName={leg.toStationName}
         stations={stations}
