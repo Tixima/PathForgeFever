@@ -1,15 +1,15 @@
 function data()
   return {
     info = {
-      minorVersion = 31,
+      minorVersion = 43,
       severityAdd = "NONE",
       severityRemove = "NONE",
-      name = _("Tixima TF2 Line Exporter"),
-      description = _("Exports Transport Fever 2 lines, stations, canonical station coordinates, native api.engine stop terminal/platform data when available, virtual platform fallback assignments, stop sequences and backend-ready static routing/map data on demand via a small in-game UI. v1.3.1 keeps native terminal/platform probing and vehicle probing, and exports complete detected-map terrain at 16m raster resolution with explicit grid resolution metadata plus surface/slope code legends."),
+      name = _("PathForgeFever Exporter"),
+      description = _("PathForgeFever – Powered by Tixima Gaming. Exports the complete Transport Fever 2 network (lines, stations, vehicles, terminals, full terrain) to JSON with a non-blocking in-game UI. Only the terrain raster resolution is configurable."),
       tags = { "Script Mod", "Tools", "Exporter" },
       authors = {
         {
-          name = "Tixima / Niklas",
+          name = "Tixima Gaming",
           role = "CREATOR",
         },
       },

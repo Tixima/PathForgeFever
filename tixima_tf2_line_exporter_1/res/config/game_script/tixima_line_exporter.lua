@@ -1,13 +1,75 @@
--- Tixima TF2 Line Exporter - v1.3.1
--- Manual one-shot export with small in-game UI.
--- v1.3.1 keeps the native Gleis + vehicle probing from v1.2.x and adds a complete
--- terrain export grid: sampled height/base-height, land/water/coast/elevation classes,
--- slope classes and terrain metadata for backend/frontend map rendering.
--- Important: fields marked as computed_experimental are NOT direct TF2 API values.
+-- PathForgeFever TF2 Network Exporter - v1.4.3
+-- Powered by Tixima Gaming. Non-blocking full export with configurable terrain raster only.
+
+local MOD_VERSION = "1.4.3"
+local SCHEMA_VERSION = 41
+local PROJECT_NAME = "PathForgeFever"
+local BRAND_LINE = "Powered by Tixima Gaming"
 
 local SCRIPT_FILE_NAME = "tixima_line_exporter.lua"
 local EVENT_ID = "tixima_exporter"
 local EVENT_EXPORT_REQUEST = "export.request"
+local EVENT_EXPORT_START = "export.start"
+local EVENT_EXPORT_CANCEL = "export.cancel"
+
+local ExportJobModule = nil
+local function loadExportJobModule()
+  if ExportJobModule ~= nil then return ExportJobModule end
+  local paths = {
+    "mods/tixima_tf2_line_exporter_1/res/config/game_script/tixima_export_job.lua",
+    "res/config/game_script/tixima_export_job.lua",
+    "tixima_export_job.lua",
+  }
+  for _, path in ipairs(paths) do
+    local chunk = loadfile(path)
+    if chunk then
+      local ok, mod = pcall(chunk)
+      if ok and type(mod) == "table" then
+        ExportJobModule = mod
+        return ExportJobModule
+      end
+    end
+  end
+  error("tixima_export_job.lua konnte nicht geladen werden")
+end
+
+local function safeLoadExportJobModule()
+  local ok, mod = pcall(loadExportJobModule)
+  if ok and mod then return mod end
+  return {
+    MOD_VERSION = MOD_VERSION,
+    SCHEMA_VERSION = SCHEMA_VERSION,
+    STATUS_FILE = "tixima_export_status.json",
+    EXPORT_PHASE = {
+      IDLE = "IDLE", QUEUED = "QUEUED", EXPORTING_TOPOLOGY = "EXPORTING_TOPOLOGY",
+      EXPORTING_VEHICLES = "EXPORTING_VEHICLES", EXPORTING_TERMINALS = "EXPORTING_TERMINALS",
+      EXPORTING_TERRAIN_BOUNDS = "EXPORTING_TERRAIN_BOUNDS", EXPORTING_TERRAIN_ROWS = "EXPORTING_TERRAIN_ROWS",
+      WRITING_FINAL_JSON = "WRITING_FINAL_JSON", DONE = "DONE", ERROR = "ERROR", CANCELLED = "CANCELLED",
+    },
+    ROWS_PER_TICK = 8,
+    defaultOptions = function() return { terrain_resolution_m = 16 } end,
+    copyOptions = function(s)
+      local o = { terrain_resolution_m = 16 }
+      if type(s) == "table" and s.terrain_resolution_m then o.terrain_resolution_m = s.terrain_resolution_m end
+      return o
+    end,
+    createJob = function() return { active = false, phase = "IDLE", options = {}, progress = 0 } end,
+    buildMirror = function(job, st) return { phase = job.phase, progress = job.progress or 0, status = st and st.status, status_text = st and st.status_text } end,
+    computeProgress = function(job) return job.progress or 0 end,
+    formatNumber = function(n) return tostring(n or 0) end,
+    formatDuration = function(s) return tostring(s or 0) end,
+    formatProgressBar = function(p) return tostring(p or 0) .. " %" end,
+    phaseLabel = function(p) return tostring(p) end,
+    buildPhaseList = function() return "" end,
+    emptyRoutingPackage = function() return { routing_nodes = {}, routing_edges = {}, transfers = {}, station_line_index = {}, network_map = {} } end,
+    emptyTerminalData = function() return { entries = {}, applied_to_stops = 0 }, {}, {} end,
+    disabledTerrainStub = function() return { status = "disabled" } end,
+    initTerrainContext = function() return { skip = true } end,
+    tickTerrainHeightRows = function() return true end,
+    tickTerrainSlopeRows = function() return true end,
+    finalizeTerrainExport = function() return { status = "disabled" } end,
+  }
+end
 
 local ticks = 0
 local engineReady = false
@@ -18,8 +80,8 @@ local runtimeInitialized = false
 
 local state = {
   schema = "tixima-tf2-line-exporter-state",
-  schema_version = 31,
-  mod_version = "1.3.1",
+  schema_version = SCHEMA_VERSION,
+  mod_version = MOD_VERSION,
   status = "loading",
   status_text = "Lade Spielstand...",
   last_message = "Noch kein Export ausgeführt.",
@@ -32,18 +94,32 @@ local state = {
   diagnostics_count = 0,
 }
 
+local exportJob = nil
+local uiSyncMirror = nil
+
 local ui = {
   initialized = false,
-  pending_export_requests = 0,
+  pending_commands = {},
+  spinner_frame = 1,
+  panel_layout_version = 0,
   window = nil,
   open_button = nil,
+  hint_text = nil,
   status_text = nil,
-  counts_text = nil,
+  phase_text = nil,
+  progress_text = nil,
+  samples_text = nil,
+  duration_text = nil,
+  resolution_combo = nil,
+  resolution_label = nil,
   output_text = nil,
   error_text = nil,
-  diag_text = nil,
-  hint_text = nil,
+  export_button = nil,
+  cancel_button = nil,
 }
+
+local PANEL_LAYOUT_VERSION = 3
+local RESOLUTION_PRESETS = { 8, 16, 32, 64 }
 
 -- Experimental conversion/routing assumptions ------------------------------
 -- These values are NOT read from TF2 as native timetable data. They are kept
@@ -82,7 +158,7 @@ local EXPERIMENTAL_DETOUR_FACTOR = {
   note = "Multiplies straight-line station-group distance to produce a more realistic route-distance estimate for MVP backend routing."
 }
 
--- v1.3.1 terrain export settings -----------------------------------------
+-- v1.4.0 terrain export settings -----------------------------------------
 -- Full native 4 m terrain over a large map can become extremely large and can
 -- freeze the game when JSON encoded in one shot. Therefore v1.3.1 exports the
 -- complete detected map rectangle as compact rows at a backend-friendly default
@@ -212,7 +288,7 @@ local function diagPush(diag, level, message)
   if type(diag) == "table" then
     diag[#diag + 1] = { level = level or "info", message = tostring(message or "") }
   end
-  print("[Tixima TF2 Line Exporter] " .. tostring(level or "info") .. ": " .. tostring(message or ""))
+  print("[" .. PROJECT_NAME .. "] " .. tostring(level or "info") .. ": " .. tostring(message or ""))
 end
 
 local function componentType(name)
@@ -2892,33 +2968,38 @@ local function buildQualityReport(lines, stations, stationGroups, segments, vehi
   return report
 end
 
-local function buildExportPayload()
-  local diag = {}
-  diagPush(diag, "info", "Export started")
-
-  local stations, stationGroups = exportStations(diag)
-  local lines, lineSource = exportLines(diag)
-  local nativeTerminalScan = scanNativeTerminalLineStops(lines, stationGroups, stations, diag)
-  local platformAssignments, boardingPoints = buildVirtualPlatformAssignments(lines, stationGroups, stations, diag)
-  local segments = buildSegments(lines, diag)
-  local vehicles, vehicleSource, vehicleProbe = exportVehicles(diag, lines)
-  local lineSummaries = buildLineSummaries(lines, segments, vehicles)
-  local routingPackage = buildRoutingAndMapPackage(stationGroups, lines, segments)
-  local coordinateSystem = buildCoordinateSystem(stationGroups)
-  local stationsCanonical = buildStationCanonical(stationGroups, stations, lines, routingPackage, coordinateSystem)
-  local renderPackage = buildRenderPackage(lines, stationsCanonical, segments, coordinateSystem)
-  local geojsonPackage = buildGeoJsonPackage(stationsCanonical, segments)
-  local networkStats = buildNetworkStats(lines, stationsCanonical, segments, routingPackage.transfers)
-  local terrainData = exportTerrainData(stationGroups, diag)
-  local qualityReport = buildQualityReport(lines, stations, stationGroups, segments, vehicles, terrainData)
+local function assembleExportPayload(parts)
+  local lines = parts.lines or {}
+  local stations = parts.stations or {}
+  local stationGroups = parts.stationGroups or {}
+  local segments = parts.segments or {}
+  local vehicles = parts.vehicles or {}
+  local nativeTerminalScan = parts.nativeTerminalScan or { entries = {}, applied_to_stops = 0 }
+  local platformAssignments = parts.platformAssignments or {}
+  local boardingPoints = parts.boardingPoints or {}
+  local lineSummaries = parts.lineSummaries or {}
+  local routingPackage = parts.routingPackage or { routing_nodes = {}, routing_edges = {}, transfers = {}, station_line_index = {}, network_map = {} }
+  local coordinateSystem = parts.coordinateSystem or {}
+  local stationsCanonical = parts.stationsCanonical or {}
+  local renderPackage = parts.renderPackage or {}
+  local geojsonPackage = parts.geojsonPackage or {}
+  local networkStats = parts.networkStats or {}
+  local terrainData = parts.terrainData or {}
+  local qualityReport = parts.qualityReport or {}
+  local diag = parts.diag or {}
+  local lineSource = parts.lineSource
+  local vehicleSource = parts.vehicleSource
+  local vehicleProbe = parts.vehicleProbe
+  local exportOptions = parts.exportOptions
 
   local backendReady = (#lines > 0 and #stationGroups > 0 and #segments > 0)
 
   local payload = {
     schema = "tpf2-network-export",
-    schema_version = 31,
-    generated_by = "Tixima TF2 Line Exporter v1.3.1",
+    schema_version = SCHEMA_VERSION,
+    generated_by = PROJECT_NAME .. " TF2 Exporter v" .. MOD_VERSION .. " (" .. BRAND_LINE .. ")",
     generated_at_unix = os and os.time and os.time() or nil,
+    export_settings = exportOptions,
     line_source = lineSource,
     vehicle_source = vehicleSource,
     vehicle_probe = vehicleProbe,
@@ -3023,7 +3104,7 @@ local function buildExportPayload()
         "Add transfers.transfer_time_seconds_experimental when switching line at the same station_group.",
         "Keep all *_origin fields so UI can show whether a value is TF2-native or estimated.",
         "Later live bridge should overwrite segment travel times with measured vehicle runtimes.",
-        "v1.3.1 transport_modes can be inferred; native_transport_modes keeps the original TF2 field for transparency.",
+        "v1.4.0 transport_modes can be inferred; native_transport_modes keeps the original TF2 field for transparency.",
         "Use boarding_station_id_best_effort for backend UX when terminal/platform is not natively available.",
         "Use stations_canonical[].coordinates.web or render_package.lines[].points[].svg_1000 for sensible frontend plotting; raw TF2 coordinates can be negative and are not screen coordinates.",
         "Use native stops[].terminal/platform_display when stop_source is api.engine/component or when native_terminal_scan.applied_to_stops > 0; otherwise use platform_assignments and boarding_points for virtual Gleis/Platform display.",
@@ -3032,7 +3113,7 @@ local function buildExportPayload()
     },
     experimental = {
       enabled = true,
-      warning = "v1.3.1 is backend-ready for static import. It fixes effective transport-mode inference from station carriers and keeps best-effort boarding-station fallback data. Computed distances, times, transfers and map metadata remain experimental estimates, not native TF2 timetable/runtime values.",
+      warning = "v1.4.0 is backend-ready for static import with non-blocking export UI. Computed distances, times, transfers and map metadata remain experimental estimates, not native TF2 timetable/runtime values.",
       features = {
         computed_segments_v3_backend_ready_distance_and_time = {
           enabled = true,
@@ -3118,6 +3199,52 @@ local function buildExportPayload()
   return payload
 end
 
+local function buildExportPayload(exportOptions)
+  local diag = {}
+  diagPush(diag, "info", "Export started")
+
+  local stations, stationGroups = exportStations(diag)
+  local lines, lineSource = exportLines(diag)
+  local nativeTerminalScan = scanNativeTerminalLineStops(lines, stationGroups, stations, diag)
+  local platformAssignments, boardingPoints = buildVirtualPlatformAssignments(lines, stationGroups, stations, diag)
+  local segments = buildSegments(lines, diag)
+  local vehicles, vehicleSource, vehicleProbe = exportVehicles(diag, lines)
+  local lineSummaries = buildLineSummaries(lines, segments, vehicles)
+  local routingPackage = buildRoutingAndMapPackage(stationGroups, lines, segments)
+  local coordinateSystem = buildCoordinateSystem(stationGroups)
+  local stationsCanonical = buildStationCanonical(stationGroups, stations, lines, routingPackage, coordinateSystem)
+  local renderPackage = buildRenderPackage(lines, stationsCanonical, segments, coordinateSystem)
+  local geojsonPackage = buildGeoJsonPackage(stationsCanonical, segments)
+  local networkStats = buildNetworkStats(lines, stationsCanonical, segments, routingPackage.transfers)
+  local terrainData = exportTerrainData(stationGroups, diag)
+  local qualityReport = buildQualityReport(lines, stations, stationGroups, segments, vehicles, terrainData)
+
+  return assembleExportPayload({
+    lines = lines,
+    stations = stations,
+    stationGroups = stationGroups,
+    segments = segments,
+    vehicles = vehicles,
+    nativeTerminalScan = nativeTerminalScan,
+    platformAssignments = platformAssignments,
+    boardingPoints = boardingPoints,
+    lineSummaries = lineSummaries,
+    routingPackage = routingPackage,
+    coordinateSystem = coordinateSystem,
+    stationsCanonical = stationsCanonical,
+    renderPackage = renderPackage,
+    geojsonPackage = geojsonPackage,
+    networkStats = networkStats,
+    terrainData = terrainData,
+    qualityReport = qualityReport,
+    diag = diag,
+    lineSource = lineSource,
+    vehicleSource = vehicleSource,
+    vehicleProbe = vehicleProbe,
+    exportOptions = exportOptions,
+  })
+end
+
 local function printJsonFallback(json)
   print("TIXIMA_TF2_EXPORT_BEGIN")
   local chunkSize = 8000
@@ -3147,21 +3274,72 @@ end
 local function setReadyIfNeeded()
   if state.status == "loading" then
     state.status = "ready"
-    state.status_text = "Bereit. Export kann manuell gestartet werden."
-    state.last_message = "Klicke im TIX Export-Fenster auf 'Export jetzt starten'."
+    state.status_text = "Bereit. Export kann gestartet werden."
+    state.last_message = "Klicke unten auf '" .. PROJECT_NAME .. "' und starte den Export."
   end
 end
 
-local function doExport(requestInfo)
-  state.status = "exporting"
-  state.status_text = "Export läuft..."
-  state.last_error = nil
-  state.request_count = (state.request_count or 0) + 1
+local SPINNER_FRAMES = { "|", "/", "-", "\\" }
 
-  local payload = buildExportPayload()
-  local json = jsonEncode(payload)
-  local wrote, targetOrErr = tryWriteFile(json)
+local function ensureExportJob()
+  local EJ = safeLoadExportJobModule()
+  if exportJob == nil then
+    exportJob = EJ.createJob()
+  end
+  return EJ, exportJob
+end
 
+local function terrainJobDeps(diag)
+  return {
+    terrainApi = terrainApi,
+    boundsFromStationGroups = boundsFromStationGroups,
+    expandTerrainBounds = expandTerrainBounds,
+    terrainIsValid = terrainIsValid,
+    terrainHeightAt = terrainHeightAt,
+    terrainBaseHeightAt = terrainBaseHeightAt,
+    readTerrainWaterLevel = readTerrainWaterLevel,
+    classifyTerrainSample = classifyTerrainSample,
+    slopeClass = slopeClass,
+    compactRowString = compactRowString,
+    roundedNumber = roundedNumber,
+    TERRAIN_EXPORT_CONFIG = TERRAIN_EXPORT_CONFIG,
+    diagRef = diag,
+  }
+end
+
+local function writeExportStatusMirror()
+  local ok, err = pcall(function()
+    local EJ = safeLoadExportJobModule()
+    local mirror = EJ.buildMirror(exportJob or EJ.createJob(), state)
+    uiSyncMirror = mirror
+    if io and io.open then
+      local file = io.open(EJ.STATUS_FILE, "w")
+      if file then
+        file:write(jsonEncode(mirror))
+        file:close()
+      end
+    end
+  end)
+  if not ok then print("[" .. PROJECT_NAME .. "] Status mirror failed: " .. tostring(err)) end
+end
+
+local function readExportStatusMirrorFromFile()
+  return nil
+end
+
+local function applyUiSyncMirror(mirror)
+  if mirror == nil then return end
+  uiSyncMirror = mirror
+  if mirror.status then state.status = mirror.status end
+  if mirror.status_text then state.status_text = mirror.status_text end
+  if mirror.last_message then state.last_message = mirror.last_message end
+  if mirror.last_output then state.last_output = mirror.last_output end
+  if mirror.last_error ~= nil then state.last_error = mirror.last_error end
+  if mirror.counts then state.counts = mirror.counts end
+  if mirror.diagnostics_count then state.diagnostics_count = mirror.diagnostics_count end
+end
+
+local function updateStateCountsFromPayload(payload)
   state.counts = {
     lines = payload.counts.lines,
     stations = payload.counts.stations,
@@ -3175,24 +3353,208 @@ local function doExport(requestInfo)
   }
   state.diagnostics_count = payload.counts.diagnostics or 0
   state.last_export_unix = payload.generated_at_unix
-  state.export_count = (state.export_count or 0) + 1
+end
 
-  print("[Tixima TF2 Line Exporter] Export generated. Lines: " .. tostring(payload.counts.lines) .. ", Stations: " .. tostring(payload.counts.stations) .. ", Station groups: " .. tostring(payload.counts.station_groups) .. ", Segments: " .. tostring(payload.counts.segments) .. ", Routing edges: " .. tostring(payload.counts.routing_edges) .. ", Vehicles*: " .. tostring(payload.counts.vehicles) .. ", Terrain samples: " .. tostring(payload.counts.terrain_samples))
+local function finishAsyncExportSuccess(payload, wrote, targetOrErr, json)
+  updateStateCountsFromPayload(payload)
+  state.export_count = (state.export_count or 0) + 1
+  print("[" .. PROJECT_NAME .. "] Export generated. Lines: " .. tostring(payload.counts.lines) .. ", Terrain samples: " .. tostring(payload.counts.terrain_samples))
 
   if wrote then
     state.status = "ok"
     state.status_text = "Export fertig."
     state.last_output = tostring(targetOrErr)
-    state.last_message = "JSON geschrieben nach: " .. tostring(targetOrErr) .. " | Segmente*: " .. tostring(payload.counts.segments) .. " | Routing*: " .. tostring(payload.counts.routing_edges) .. " | Vehicles*: " .. tostring(payload.counts.vehicles) .. " | Terrain: " .. tostring(payload.counts.terrain_samples) .. " samples @" .. tostring(payload.counts.terrain_resolution_m or "?") .. "m | Diagnostics: " .. tostring(state.diagnostics_count)
-    print("[Tixima TF2 Line Exporter] Export written to: " .. tostring(targetOrErr))
+    state.last_message = "JSON geschrieben nach: " .. tostring(targetOrErr) .. " | Terrain: " .. tostring(payload.counts.terrain_samples) .. " samples @" .. tostring(payload.counts.terrain_resolution_m or "?") .. "m"
+    print("[" .. PROJECT_NAME .. "] Export written to: " .. tostring(targetOrErr))
   else
     state.status = "fallback_stdout"
-    state.status_text = "Export fertig, aber Datei konnte nicht geschrieben werden."
+    state.status_text = "Export fertig, Datei konnte nicht geschrieben werden."
     state.last_output = "stdout.txt markers"
-    state.last_message = "Datei schreiben fehlgeschlagen: " .. tostring(targetOrErr) .. ". JSON steht in stdout.txt zwischen TIXIMA_TF2_EXPORT_BEGIN/END."
-    print("[Tixima TF2 Line Exporter] File write failed: " .. tostring(targetOrErr) .. ". Writing JSON to stdout markers instead.")
+    state.last_message = "Datei schreiben fehlgeschlagen: " .. tostring(targetOrErr) .. ". JSON in stdout.txt."
     printJsonFallback(json)
   end
+
+  exportJob.active = false
+  exportJob.phase = safeLoadExportJobModule().EXPORT_PHASE.DONE
+  exportJob.finished_at = os and os.time and os.time() or nil
+  writeExportStatusMirror()
+end
+
+local function finishAsyncExportError(err)
+  ensureExportJob()
+  exportJob.active = false
+  exportJob.phase = safeLoadExportJobModule().EXPORT_PHASE.ERROR
+  exportJob.error = tostring(err)
+  state.status = "error"
+  state.status_text = "Export fehlgeschlagen."
+  state.last_error = tostring(err)
+  state.last_message = "Fehler beim Export: " .. tostring(err)
+  print("[" .. PROJECT_NAME .. "] ERROR while exporting: " .. tostring(err))
+  writeExportStatusMirror()
+end
+
+local function queueAsyncExport(options, source)
+  local EJ, job = ensureExportJob()
+  if job.active then
+    state.last_message = "Export läuft bereits."
+    return false
+  end
+
+  job.active = true
+  job.cancel_requested = false
+  job.phase = EJ.EXPORT_PHASE.QUEUED
+  job.options = EJ.copyOptions(options)
+  job.source = source
+  job.started_at = os and os.time and os.time() or nil
+  job.finished_at = nil
+  job.data = nil
+  job.terrain = nil
+  job.error = nil
+  job.progress = 0
+  job.samples_done = 0
+  job.total_samples = 0
+
+  state.status = "exporting"
+  state.status_text = "Export läuft..."
+  state.last_error = nil
+  state.request_count = (state.request_count or 0) + 1
+  state.last_message = "Export gestartet (" .. PROJECT_NAME .. " v" .. MOD_VERSION .. ")."
+  writeExportStatusMirror()
+  return true
+end
+
+local function cancelAsyncExport()
+  local EJ, job = ensureExportJob()
+  if not job.active then
+    state.last_message = "Kein laufender Export."
+    return
+  end
+  job.cancel_requested = true
+  state.status_text = "Abbruch angefordert..."
+  writeExportStatusMirror()
+end
+
+local function tickAsyncExport()
+  local EJ, job = ensureExportJob()
+  if not job.active then return end
+
+  if job.cancel_requested then
+    job.active = false
+    job.phase = EJ.EXPORT_PHASE.CANCELLED
+    state.status = "cancelled"
+    state.status_text = "Export abgebrochen."
+    state.last_message = "Export wurde abgebrochen."
+    writeExportStatusMirror()
+    return
+  end
+
+  local ok, err = pcall(function()
+    local PHASE = EJ.EXPORT_PHASE
+    local opts = job.options or EJ.defaultOptions()
+
+    if job.phase == PHASE.QUEUED then
+      job.phase = PHASE.EXPORTING_TOPOLOGY
+      job.data = { diag = {}, options = opts }
+      diagPush(job.data.diag, "info", "Async export started (" .. PROJECT_NAME .. " v" .. MOD_VERSION .. ")")
+    elseif job.phase == PHASE.EXPORTING_TOPOLOGY then
+      local d = job.data
+      local diag = d.diag
+      d.stations, d.stationGroups = exportStations(diag)
+      d.lines, d.lineSource = exportLines(diag)
+      d.segments = buildSegments(d.lines, diag)
+      d.routingPackage = buildRoutingAndMapPackage(d.stationGroups, d.lines, d.segments)
+      d.coordinateSystem = buildCoordinateSystem(d.stationGroups)
+      d.stationsCanonical = buildStationCanonical(d.stationGroups, d.stations, d.lines, d.routingPackage, d.coordinateSystem)
+      d.renderPackage = buildRenderPackage(d.lines, d.stationsCanonical, d.segments, d.coordinateSystem)
+      d.geojsonPackage = buildGeoJsonPackage(d.stationsCanonical, d.segments)
+      d.networkStats = buildNetworkStats(d.lines, d.stationsCanonical, d.segments, d.routingPackage.transfers)
+      job.phase = PHASE.EXPORTING_TERMINALS
+    elseif job.phase == PHASE.EXPORTING_TERMINALS then
+      local d = job.data
+      d.nativeTerminalScan = scanNativeTerminalLineStops(d.lines, d.stationGroups, d.stations, d.diag)
+      d.platformAssignments, d.boardingPoints = buildVirtualPlatformAssignments(d.lines, d.stationGroups, d.stations, d.diag)
+      job.phase = PHASE.EXPORTING_VEHICLES
+    elseif job.phase == PHASE.EXPORTING_VEHICLES then
+      local d = job.data
+      d.vehicles, d.vehicleSource, d.vehicleProbe = exportVehicles(d.diag, d.lines)
+      d.lineSummaries = buildLineSummaries(d.lines, d.segments, d.vehicles)
+      job.phase = PHASE.EXPORTING_TERRAIN_BOUNDS
+    elseif job.phase == PHASE.EXPORTING_TERRAIN_BOUNDS then
+      local d = job.data
+      job.terrain = EJ.initTerrainContext(d.stationGroups, opts, terrainJobDeps(d.diag))
+      job.total_samples = job.terrain.total_samples or 0
+      job.samples_done = 0
+      if job.terrain.skip then
+        job.data.terrainData = EJ.finalizeTerrainExport(job.terrain, terrainJobDeps(d.diag))
+        job.phase = PHASE.WRITING_FINAL_JSON
+      else
+        job.terrain.subPhase = "height"
+        job.phase = PHASE.EXPORTING_TERRAIN_ROWS
+      end
+    elseif job.phase == PHASE.EXPORTING_TERRAIN_ROWS then
+      local t = job.terrain
+      local d = job.data
+      if t.subPhase == "height" then
+        local done = EJ.tickTerrainHeightRows(t, terrainJobDeps(d.diag), EJ.ROWS_PER_TICK)
+        job.samples_done = t.samples_done or 0
+        job.total_samples = t.total_samples or job.total_samples
+        if done then
+          t.subPhase = "slope"
+          t.slopeRow = 0
+        end
+      else
+        local done = EJ.tickTerrainSlopeRows(t, terrainJobDeps(d.diag), EJ.ROWS_PER_TICK)
+        if done then
+          d.terrainData = EJ.finalizeTerrainExport(t, terrainJobDeps(d.diag))
+          diagPush(d.diag, "info", "terrain export built incrementally")
+          job.phase = PHASE.WRITING_FINAL_JSON
+        end
+      end
+    elseif job.phase == PHASE.WRITING_FINAL_JSON then
+      local d = job.data
+      d.qualityReport = buildQualityReport(d.lines, d.stations, d.stationGroups, d.segments, d.vehicles, d.terrainData)
+      local payload = assembleExportPayload({
+        lines = d.lines,
+        stations = d.stations,
+        stationGroups = d.stationGroups,
+        segments = d.segments,
+        vehicles = d.vehicles,
+        nativeTerminalScan = d.nativeTerminalScan,
+        platformAssignments = d.platformAssignments,
+        boardingPoints = d.boardingPoints,
+        lineSummaries = d.lineSummaries,
+        routingPackage = d.routingPackage,
+        coordinateSystem = d.coordinateSystem,
+        stationsCanonical = d.stationsCanonical,
+        renderPackage = d.renderPackage,
+        geojsonPackage = d.geojsonPackage,
+        networkStats = d.networkStats,
+        terrainData = d.terrainData,
+        qualityReport = d.qualityReport,
+        diag = d.diag,
+        lineSource = d.lineSource,
+        vehicleSource = d.vehicleSource,
+        vehicleProbe = d.vehicleProbe,
+        exportOptions = opts,
+      })
+      local json = jsonEncode(payload)
+      local wrote, targetOrErr = tryWriteFile(json)
+      finishAsyncExportSuccess(payload, wrote, targetOrErr, json)
+    end
+  end)
+
+  if not ok then
+    finishAsyncExportError(err)
+    return
+  end
+
+  job.progress = EJ.computeProgress(job)
+  writeExportStatusMirror()
+end
+
+local function doExport(requestInfo)
+  local options = (requestInfo and requestInfo.options) or safeLoadExportJobModule().defaultOptions()
+  queueAsyncExport(options, (requestInfo and requestInfo.source) or "legacy_export_request")
 end
 
 -- Engine callbacks ----------------------------------------------------------
@@ -3203,57 +3565,62 @@ local function update()
     engineReady = true
     setReadyIfNeeded()
   end
+  tickAsyncExport()
 end
 
 local function handleEvent(src, id, name, param)
-  if id ~= EVENT_ID or name ~= EVENT_EXPORT_REQUEST then return end
+  if id ~= EVENT_ID then return end
 
-  local ok, err = pcall(function() doExport(param) end)
-  if not ok then
-    state.status = "error"
-    state.status_text = "Export fehlgeschlagen."
-    state.last_error = tostring(err)
-    state.last_message = "Fehler beim Export: " .. tostring(err) .. " | Schau bitte zusätzlich in stdout.txt nach der vollständigen Zeile."
-    print("[Tixima TF2 Line Exporter] ERROR while exporting: " .. tostring(err))
+  if name == EVENT_EXPORT_START or name == EVENT_EXPORT_REQUEST then
+    local ok, err = pcall(function() doExport(param or { source = "engine_event" }) end)
+    if not ok then finishAsyncExportError(err) end
+    return
+  end
+
+  if name == EVENT_EXPORT_CANCEL then
+    cancelAsyncExport()
   end
 end
 
 local function save()
-  -- v1.3.0: Do NOT persist volatile UI/export status.
-  -- TF2 creates/checks multiple simulation states during load; saving changing runtime
-  -- status here can trigger ScriptSave mismatch assertions. The exporter is a manual
-  -- tool, so only a tiny deterministic marker is saved.
-  return {
+  local blob = {
     schema = "tixima-tf2-line-exporter-state",
-    schema_version = 31,
-    mod_version = "1.3.1",
+    schema_version = SCHEMA_VERSION,
+    mod_version = MOD_VERSION,
   }
+  if exportJob ~= nil and exportJob.active then
+    blob.sync = safeLoadExportJobModule().buildMirror(exportJob, state)
+  elseif uiSyncMirror ~= nil then
+    blob.sync = uiSyncMirror
+  end
+  return blob
 end
 
 local function load(loadedState)
-  -- v1.3.0: load() is called once in the engine state, but repeatedly in the UI
-  -- state to fetch shared data. Reinitializing here every time is exactly why the
-  -- panel jumped to the export result for a split second and then reset to
-  -- "Warte auf Engine" with 0/0/0. Therefore initialize once per Lua state and
-  -- ignore later load calls. save() remains deterministic/minimal to avoid the
-  -- StartGameSim ScriptSave assertion.
-  if runtimeInitialized then return end
-  runtimeInitialized = true
-  state = {
-    schema = "tixima-tf2-line-exporter-state",
-    schema_version = 31,
-    mod_version = "1.3.1",
-    status = "loading",
-    status_text = "v1.3.1 geladen. Bereit.",
-    last_message = "v1.3.1: UI-Load-Reset gefixt. Export direkt im UI starten; JSON bleibt Quelle der Wahrheit.",
-    last_error = nil,
-    last_output = nil,
-    last_export_unix = nil,
-    export_count = 0,
-    request_count = 0,
-    counts = { lines = 0, stations = 0, station_groups = 0, segments = 0, vehicles = 0, routing_nodes = 0, routing_edges = 0, transfers = 0 },
-    diagnostics_count = 0,
-  }
+  if not runtimeInitialized then
+    runtimeInitialized = true
+    state = {
+      schema = "tixima-tf2-line-exporter-state",
+      schema_version = SCHEMA_VERSION,
+      mod_version = MOD_VERSION,
+      status = "loading",
+      status_text = PROJECT_NAME .. " bereit.",
+      last_message = BRAND_LINE .. " · Vollständiger Export, einstellbar nur Terrain-Raster.",
+      last_error = nil,
+      last_output = nil,
+      last_export_unix = nil,
+      export_count = 0,
+      request_count = 0,
+      counts = { lines = 0, stations = 0, station_groups = 0, segments = 0, vehicles = 0, routing_nodes = 0, routing_edges = 0, transfers = 0, terrain_samples = 0 },
+      diagnostics_count = 0,
+    }
+    exportJob = nil
+  end
+
+  if loadedState and type(loadedState) == "table" and loadedState.sync then
+    uiSyncMirror = loadedState.sync
+    applyUiSyncMirror(loadedState.sync)
+  end
 end
 
 -- GUI helpers ---------------------------------------------------------------
@@ -3280,82 +3647,136 @@ local function guiContainer(name, id)
   return c
 end
 
+local function guiSetMinSize(comp, w, h)
+  if comp == nil then return end
+  pcall(function() comp:setMinimumSize(api.gui.util.Size.new(w, h)) end)
+end
+
+local function normalizeResolutionM(value)
+  local v = tonumber(value) or 16
+  v = math.max(8, math.min(64, math.floor(v + 0.5)))
+  return math.floor((v + 4) / 8) * 8
+end
+
+local function comboResolutionM(combo, fallback)
+  if combo == nil then return normalizeResolutionM(fallback) end
+  local ok, idx = pcall(function() return combo:getCurrentIndex() end)
+  if ok and idx ~= nil then
+    local preset = RESOLUTION_PRESETS[(tonumber(idx) or 0) + 1]
+    if preset then return preset end
+  end
+  return normalizeResolutionM(fallback)
+end
+
+local function queueDeferredScriptEvent(name, param)
+  ui.pending_commands[#ui.pending_commands + 1] = function()
+    api.cmd.sendCommand(api.cmd.make.sendScriptEvent(SCRIPT_FILE_NAME, EVENT_ID, name, param))
+  end
+end
+
+local function getExportSettingsFromUi()
+  return { terrain_resolution_m = comboResolutionM(ui.resolution_combo, 16) }
+end
+
 local function makePanelContent()
-  local content = guiContainer("TiximaExporterPanel", "tixima_exporter_panel")
+  local root = guiContainer("PathForgeFeverPanel", "pathforge_fever_panel")
   local layout = api.gui.layout.BoxLayout.new("VERTICAL")
-  content:setLayout(layout)
+  root:setLayout(layout)
+  guiSetMinSize(root, 420, 390)
 
-  ui.status_text = guiAddText(layout, "Status: v1.3.1 geladen. Exportdatei ist Quelle der Wahrheit.")
-  ui.counts_text = guiAddText(layout, "UI-Counts können in TF2 getrenntem GUI/Engine-State statisch bleiben; JSON enthält echte Counts.")
-  ui.output_text = guiAddText(layout, "Output: -")
-  ui.error_text = guiAddText(layout, "Fehler: -")
-  ui.diag_text = guiAddText(layout, "Diagnostics: -")
-  ui.hint_text = guiAddText(layout, "Hinweis: Export wird manuell ausgelöst und überschreibt tpf2_network_export.json.")
+  ui.hint_text = guiAddText(layout, BRAND_LINE .. "  ·  v" .. MOD_VERSION)
+  ui.status_text = guiAddText(layout, "Status: Bereit")
+  ui.phase_text = guiAddText(layout, "Phase: Bereit")
+  ui.progress_text = guiAddText(layout, "[--------------------] 0 %")
+  ui.samples_text = guiAddText(layout, "Samples: 0 / 0")
+  ui.duration_text = guiAddText(layout, "Dauer: 00:00   ETA: --:--")
 
-  local buttons = guiContainer("TiximaExporterButtons", "tixima_exporter_buttons")
+  local settingsRow = guiContainer("PathForgeFeverSettingsRow", "pathforge_settings_row")
+  local settingsLayout = api.gui.layout.BoxLayout.new("HORIZONTAL")
+  settingsRow:setLayout(settingsLayout)
+  settingsLayout:addItem(guiText("Terrain-Raster:"))
+  pcall(function()
+    ui.resolution_combo = api.gui.comp.ComboBox.new()
+    for i = 1, #RESOLUTION_PRESETS do
+      ui.resolution_combo:addItem(tostring(RESOLUTION_PRESETS[i]) .. " m")
+    end
+    ui.resolution_combo:setCurrentIndex(1, false)
+    ui.resolution_combo:onIndexChanged(function(index)
+      local m = RESOLUTION_PRESETS[(tonumber(index) or 0) + 1] or 16
+      if ui.resolution_label then
+        pcall(function() ui.resolution_label:setText("Raster: " .. tostring(m) .. " m") end)
+      end
+    end)
+    guiSetMinSize(ui.resolution_combo, 100, 28)
+    settingsLayout:addItem(ui.resolution_combo)
+  end)
+  ui.resolution_label = guiText("Raster: 16 m")
+  settingsLayout:addItem(ui.resolution_label)
+  layout:addItem(settingsRow)
+
+  guiAddText(layout, "Export: Linien, Stationen, Fahrzeuge, Gleise, Terrain")
+
+  local buttons = guiContainer("PathForgeFeverButtons", "pathforge_fever_buttons")
   local buttonLayout = api.gui.layout.BoxLayout.new("HORIZONTAL")
   buttons:setLayout(buttonLayout)
+  guiSetMinSize(buttons, 400, 40)
 
-  local exportButton = guiButton("Export jetzt starten", function()
-    -- v1.3.0: Do not wait for guiUpdate scheduling. Execute directly from the click
-    -- handler so the visible window can be updated immediately. If direct export is
-    -- not allowed in the current TF2 context, fall back to an engine ScriptEvent and
-    -- still show a visible status instead of silently staying at 0/0/0.
+  ui.export_button = guiButton("Export starten", function()
     state.status = "exporting"
-    state.status_text = "Export läuft..."
-    state.last_error = nil
-    state.last_message = "Export per Button gestartet."
-    if ui.status_text then pcall(function() ui.status_text:setText("Status: Export läuft...") end) end
-    if ui.error_text then pcall(function() ui.error_text:setText("Fehler: -") end) end
-
-    local ok, err = pcall(function()
-      doExport({ source = "tixima_ui_click_direct" })
-    end)
-
-    if not ok then
-      local sent = pcall(function()
-        api.cmd.sendCommand(api.cmd.make.sendScriptEvent(
-          SCRIPT_FILE_NAME,
-          EVENT_ID,
-          EVENT_EXPORT_REQUEST,
-          { source = "tixima_ui_engine_fallback", reason = tostring(err) }
-        ))
-      end)
-      state.status = "engine_requested"
-      state.status_text = "Engine-Export angefordert."
-      state.last_error = tostring(err)
-      state.last_message = sent and "Direkter UI-Export fehlgeschlagen; Engine-Fallback wurde gesendet. Exportdatei prüfen." or "Direkter UI-Export fehlgeschlagen; Engine-Fallback konnte nicht gesendet werden."
-    else
-      state.last_message = (state.last_message or "Export fertig.") .. " | v1.3.1 UI nach Button-Klick direkt aktualisiert."
-    end
-
-    local counts = state.counts or {}
-    if ui.status_text then pcall(function() ui.status_text:setText("Status: " .. tostring(state.status_text or "-")) end) end
-    if ui.counts_text then pcall(function() ui.counts_text:setText("Linien: " .. tostring(counts.lines or 0) .. " | Stationen: " .. tostring(counts.stations or 0) .. " | Gruppen: " .. tostring(counts.station_groups or 0) .. " | Segmente*: " .. tostring(counts.segments or 0) .. " | Routing*: " .. tostring(counts.routing_edges or 0) .. " | Vehicles*: " .. tostring(counts.vehicles or 0) .. " | Exporte: " .. tostring(state.export_count or 0)) end) end
-    if ui.output_text then pcall(function() ui.output_text:setText("Output: " .. tostring(state.last_output or "-")) end) end
-    if ui.diag_text then pcall(function() ui.diag_text:setText("Diagnostics: " .. tostring(state.diagnostics_count or 0) .. " Einträge") end) end
-    if ui.error_text then pcall(function() ui.error_text:setText(state.last_error and ("Fehler: " .. tostring(state.last_error)) or "Fehler: -") end) end
-    if ui.hint_text then pcall(function() ui.hint_text:setText(tostring(state.last_message or "")) end) end
+    state.status_text = "Export wird gestartet..."
+    state.last_message = "Vollstaendiger Export gestartet."
+    queueDeferredScriptEvent(EVENT_EXPORT_START, {
+      source = "pathforge_fever_ui",
+      options = getExportSettingsFromUi(),
+    })
   end)
-  exportButton:setTooltip("Erstellt/überschreibt tpf2_network_export.json oder schreibt als Fallback in stdout.txt.")
-  buttonLayout:addItem(exportButton)
+  ui.export_button:setTooltip("Startet den vollstaendigen Netzwerk-Export ohne Spiel-Freeze.")
+  guiSetMinSize(ui.export_button, 130, 34)
+  buttonLayout:addItem(ui.export_button)
 
-  local closeButton = guiButton("Schließen", function()
+  ui.cancel_button = guiButton("Abbrechen", function()
+    queueDeferredScriptEvent(EVENT_EXPORT_CANCEL, { source = "pathforge_fever_ui" })
+    state.status_text = "Abbruch angefordert..."
+  end)
+  guiSetMinSize(ui.cancel_button, 110, 34)
+  buttonLayout:addItem(ui.cancel_button)
+
+  local closeButton = guiButton("Schliessen", function()
     if ui.window then ui.window:close() end
   end)
+  guiSetMinSize(closeButton, 110, 34)
   buttonLayout:addItem(closeButton)
-
   layout:addItem(buttons)
-  return content
+
+  ui.output_text = guiAddText(layout, "Output: -")
+  ui.error_text = guiAddText(layout, "Fehler: -")
+
+  return root
 end
 
 local function ensureWindow()
-  if ui.window ~= nil then return ui.window end
-  local content = makePanelContent()
-  local win = api.gui.comp.Window.new("Tixima TF2 Line Exporter", content)
+  if ui.window ~= nil and ui.panel_layout_version == PANEL_LAYOUT_VERSION and ui.export_button ~= nil then
+    return ui.window
+  end
+  if ui.window ~= nil then
+    pcall(function() ui.window:close() end)
+    ui.window = nil
+    ui.export_button = nil
+    ui.cancel_button = nil
+  end
+
+  local ok, content = pcall(makePanelContent)
+  if not ok or content == nil then
+    print("[" .. PROJECT_NAME .. "] Fenster konnte nicht erstellt werden: " .. tostring(content))
+    return nil
+  end
+
+  local win = api.gui.comp.Window.new(PROJECT_NAME, content)
   ui.window = win
-  pcall(function() win:setSize(api.gui.util.Size.new(640, 250)) end)
-  pcall(function() win:setPosition(260, 160) end)
+  ui.panel_layout_version = PANEL_LAYOUT_VERSION
+  pcall(function() win:setSize(api.gui.util.Size.new(420, 390)) end)
+  pcall(function() win:setMinimumSize(api.gui.util.Size.new(420, 390)) end)
+  pcall(function() win:setPosition(300, 120) end)
   pcall(function() win:setResizable(false) end)
   pcall(function() win:setMovable(true) end)
   pcall(function() win:addHideOnCloseHandler() end)
@@ -3365,6 +3786,7 @@ end
 
 local function showWindow()
   local win = ensureWindow()
+  if win == nil then return end
   pcall(function() win:setVisible(true, true) end)
 end
 
@@ -3374,8 +3796,8 @@ local function guiInit()
 
   local ok, err = pcall(function()
     local line = api.gui.comp.Component.new("VerticalLine")
-    local button = guiButton("TIX Export", function() showWindow() end)
-    button:setTooltip("Tixima TF2 Line Exporter öffnen")
+    local button = guiButton(PROJECT_NAME, function() showWindow() end)
+    button:setTooltip(PROJECT_NAME .. " – " .. BRAND_LINE)
     ui.open_button = button
 
     local gameInfo = api.gui.util.getById("gameInfo")
@@ -3386,22 +3808,11 @@ local function guiInit()
     end
   end)
 
-  if not ok then print("[Tixima TF2 Line Exporter] GUI init failed: " .. tostring(err)) end
+  if not ok then print("[" .. PROJECT_NAME .. "] GUI init failed: " .. tostring(err)) end
 end
 
 local function updateTextView(tv, value)
   if tv ~= nil then pcall(function() tv:setText(value or "") end) end
-end
-
-local function formatStatus(s)
-  local status = s.status or "unknown"
-  local text = s.status_text or "-"
-  if status == "ok" then return "Status: OK - " .. text end
-  if status == "fallback_stdout" then return "Status: WARNUNG - " .. text end
-  if status == "error" then return "Status: FEHLER - " .. text end
-  if status == "exporting" then return "Status: Export läuft - " .. text end
-  if status == "ready" then return "Status: Bereit" end
-  return "Status: " .. text
 end
 
 local function shorten(text, maxLen)
@@ -3410,78 +3821,62 @@ local function shorten(text, maxLen)
   return string.sub(text, 1, maxLen - 3) .. "..."
 end
 
+local function statusHeadline()
+  if state.status == "ok" then return "Status: OK" end
+  if state.status == "exporting" then return "Status: Export läuft" end
+  if state.status == "error" then return "Status: FEHLER" end
+  if state.status == "cancelled" then return "Status: Abgebrochen" end
+  if state.status == "fallback_stdout" then return "Status: WARNUNG" end
+  if state.status == "ready" then return "Status: Bereit" end
+  return "Status: " .. tostring(state.status_text or state.status or "-")
+end
+
 local function guiUpdateLabels()
   if ui.window == nil then return end
-  local counts = state.counts or {}
-  updateTextView(ui.status_text, formatStatus(state))
-  updateTextView(ui.counts_text, "Linien: " .. tostring(counts.lines or 0) .. " | Stationen: " .. tostring(counts.stations or 0) .. " | Gruppen: " .. tostring(counts.station_groups or 0) .. " | Segmente*: " .. tostring(counts.segments or 0) .. " | Routing*: " .. tostring(counts.routing_edges or 0) .. " | Vehicles*: " .. tostring(counts.vehicles or 0) .. " | Exporte: " .. tostring(state.export_count or 0))
-  updateTextView(ui.output_text, "Output: " .. tostring(state.last_output or "-"))
-  updateTextView(ui.diag_text, "Diagnostics: " .. tostring(state.diagnostics_count or 0) .. " Einträge")
 
+  local EJ = safeLoadExportJobModule()
+  local mirror = uiSyncMirror or {}
+  local progress = mirror.progress or exportJob and exportJob.progress or 0
+  local phaseLabel = mirror.phase_label or (exportJob and EJ.phaseLabel(exportJob.phase, exportJob)) or "IDLE"
+  local samplesDone = mirror.samples_done or (exportJob and exportJob.samples_done) or 0
+  local totalSamples = mirror.total_samples or (exportJob and exportJob.total_samples) or 0
+  local elapsed = mirror.elapsed or "00:00"
+  local eta = mirror.eta or "--:--"
+
+  ui.spinner_frame = (ui.spinner_frame or 1) % #SPINNER_FRAMES + 1
+  local spinning = (state.status == "exporting" or mirror.active == true)
+  local spinnerPrefix = spinning and (SPINNER_FRAMES[ui.spinner_frame] .. " ") or ""
+  updateTextView(ui.status_text, spinnerPrefix .. statusHeadline())
+  updateTextView(ui.phase_text, "Phase: " .. tostring(phaseLabel))
+  updateTextView(ui.progress_text, EJ.formatProgressBar(progress, 24))
+  updateTextView(ui.samples_text, "Samples: " .. EJ.formatNumber(samplesDone) .. " / " .. EJ.formatNumber(totalSamples))
+  updateTextView(ui.duration_text, "Dauer: " .. tostring(elapsed) .. "   ETA: " .. tostring(eta))
+
+  updateTextView(ui.output_text, "Output: " .. shorten(state.last_output or "-", 52))
   if state.last_error ~= nil then
-    updateTextView(ui.error_text, "Fehler: " .. shorten(state.last_error, 130))
+    updateTextView(ui.error_text, "Fehler: " .. shorten(state.last_error, 160))
   else
     updateTextView(ui.error_text, "Fehler: -")
   end
-  updateTextView(ui.hint_text, shorten((state.last_message or "") .. "  * = experimentell/best-effort; echte TF2-Topologie bleibt erhalten.", 220))
+
+  local exporting = spinning
+  if ui.export_button then pcall(function() ui.export_button:setEnabled(not exporting) end) end
+  if ui.cancel_button then pcall(function() ui.cancel_button:setEnabled(exporting) end) end
 end
 
-local function requestEngineExportFallback(reason)
-  local ok, err = pcall(function()
-    api.cmd.sendCommand(api.cmd.make.sendScriptEvent(
-      SCRIPT_FILE_NAME,
-      EVENT_ID,
-      EVENT_EXPORT_REQUEST,
-      { source = "tixima_ui_engine_fallback", reason = tostring(reason or "direct_ui_export_failed") }
-    ))
-  end)
-
-  if ok then
-    state.status = "engine_requested"
-    state.status_text = "Engine-Export angefordert."
-    state.last_error = nil
-    state.last_message = "Direkter UI-Export war nicht möglich, Engine-Fallback wurde gesendet. Datei tpf2_network_export.json prüfen. Grund: " .. shorten(reason, 120)
-    print("[Tixima TF2 Line Exporter] Direct UI export failed, engine fallback sent. Reason: " .. tostring(reason))
-  else
-    state.status = "error"
-    state.status_text = "Export-Anforderung fehlgeschlagen."
-    state.last_error = tostring(err)
-    state.last_message = "Direkter UI-Export fehlgeschlagen und Engine-Fallback konnte nicht gesendet werden."
-    print("[Tixima TF2 Line Exporter] Could not send export request: " .. tostring(err))
-  end
-end
-
-local function runDirectUiExport()
-  state.status = "exporting"
-  state.status_text = "Export läuft direkt im UI-Kontext..."
-  state.last_error = nil
-  state.last_message = "Export gestartet. UI wird nach Abschluss direkt mit Counts und Output aktualisiert."
-  guiUpdateLabels()
-
-  local ok, err = pcall(function()
-    doExport({ source = "tixima_ui_direct" })
-  end)
-
-  if not ok then
-    requestEngineExportFallback(err)
-  else
-    state.last_message = (state.last_message or "Export fertig.") .. " | v1.3.1 UI direkt aktualisiert."
-    guiUpdateLabels()
-  end
-end
-
-local function flushGuiExportRequests()
-  if ui.pending_export_requests <= 0 then return end
-  local count = ui.pending_export_requests
-  ui.pending_export_requests = 0
-
-  for _ = 1, count do
-    runDirectUiExport()
+local function flushDeferredUiCommands()
+  if #ui.pending_commands <= 0 then return end
+  local cmds = ui.pending_commands
+  ui.pending_commands = {}
+  for i = 1, #cmds do
+    pcall(cmds[i])
   end
 end
 
 local function guiUpdate()
-  flushGuiExportRequests()
+  flushDeferredUiCommands()
+  local fileMirror = readExportStatusMirrorFromFile()
+  if fileMirror then applyUiSyncMirror(fileMirror) end
   guiUpdateLabels()
 end
 
