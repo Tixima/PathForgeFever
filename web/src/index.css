@@ -1486,8 +1486,13 @@ button {
 }
 
 .route-map__node--via {
-  fill: #d8b4fe;
-  stroke: #581c87;
+  fill: #a78bfa;
+}
+
+.route-map__node--transfer {
+  fill: #fb923c;
+  stroke: #fff;
+  stroke-width: 2;
 }
 
 .route-map__label {
@@ -3303,6 +3308,151 @@ button {
 .zoom-map__viewport.is-panning {
   cursor: grabbing;
 }
+
+/* Geographic 2D / 3D toggle */
+.geo-map-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.geo-map-frame__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.geo-map-frame__mode-toggle {
+  display: inline-flex;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.geo-map-frame__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.geo-map-frame__mode-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.geo-map-frame__mode-btn.is-active {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.geo-map-frame__mode-btn.is-disabled,
+.geo-map-frame__mode-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.geo-map-frame__terrain-hint {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  max-width: 28rem;
+  line-height: 1.4;
+}
+
+.geo-map-frame__no-terrain {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 320px;
+  padding: 1.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.geo-map-frame__no-terrain p {
+  margin: 0;
+  max-width: 36rem;
+  line-height: 1.5;
+}
+
+
+.terrain-map-3d {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.terrain-map-3d__canvas {
+  position: relative;
+  height: min(62vh, 560px);
+  min-height: 420px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #1a2838;
+  border: 1px solid var(--border);
+}
+
+.terrain-map-3d__canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.terrain-map-3d__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.terrain-map-3d__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.terrain-map-3d__legend-item i {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.terrain-map-3d__legend-hint {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
+.terrain-map-3d__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.route-map .geo-map-frame__toolbar {
+  margin-bottom: 0.35rem;
+}
+
+.isochrone-map .geo-map-frame__toolbar {
+  margin-bottom: 0.35rem;
+}
+
 
 .zoom-map__viewport.is-ready .zoom-map__svg {
   transition: transform 0.05s linear;

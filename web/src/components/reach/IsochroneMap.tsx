@@ -4,6 +4,7 @@ import type { NetworkExport } from '../../types/network'
 import type { RouteCriterion } from '../../lib/routing/types'
 import type { ScaleSettings } from '../../lib/scale'
 import { buildGeographicLayout } from '../../lib/maps/geoLayout'
+import { resolveGeoBounds } from '../../lib/maps/geoProjection'
 import { buildNetworkMapData } from '../../lib/maps/buildNetworkMapData'
 import type { LayoutStation } from '../../lib/maps/types'
 import { placeMapLabels } from '../../lib/maps/mapLabelPlacement'
@@ -12,6 +13,9 @@ import {
   countByBucket,
   getIsochroneBuckets,
 } from '../../lib/reach/isochrone'
+import { buildIsochroneOverlay } from '../../lib/maps/map3dOverlay'
+import { GeographicMapFrame } from '../maps/GeographicMapFrame'
+import { TerrainMapBackground } from '../maps/TerrainMapBackground'
 import { formatDuration, formatDurationCompact } from '../../lib/format'
 import { ZoomableMapViewport } from '../maps/ZoomableMapViewport'
 import { CompassRose } from '../maps/CompassRose'
@@ -41,6 +45,14 @@ export function IsochroneMap({
   const layout = useMemo(
     () =>
       buildGeographicLayout(mapData.stations, {
+        boundingBox: network.network_map?.bounding_box,
+      }),
+    [mapData.stations, network.network_map?.bounding_box],
+  )
+
+  const geoBounds = useMemo(
+    () =>
+      resolveGeoBounds(mapData.stations, {
         boundingBox: network.network_map?.bounding_box,
       }),
     [mapData.stations, network.network_map?.bounding_box],
@@ -99,6 +111,19 @@ export function IsochroneMap({
     return new Map(placed.map((label) => [label.id, label]))
   }, [layout.stations, layout.width, layout.height, durationByStation, originId])
 
+  const overlay3d = useMemo(
+    () =>
+      buildIsochroneOverlay(mapData.stations, network.terrain, {
+        originId,
+        colorByStationId: new Map(
+          isochrone.map((i) => [i.stationId, i.bucket.color]),
+        ),
+        reachableIds: new Set(isochrone.map((i) => i.stationId)),
+        stationBounds: geoBounds,
+      }),
+    [mapData.stations, network.terrain, originId, isochrone, geoBounds],
+  )
+
   return (
     <div className="isochrone-map">
       <div className="isochrone-map__legend">
@@ -111,12 +136,20 @@ export function IsochroneMap({
         ))}
       </div>
 
-      <div className="netmap netmap--geo isochrone-map__canvas">
+      <GeographicMapFrame terrain={network.terrain} overlay={overlay3d} stationBounds={geoBounds}>
+        <div className="netmap netmap--geo isochrone-map__canvas">
         <ZoomableMapViewport
           contentWidth={layout.width}
           contentHeight={layout.height}
           viewBox={layout.viewBox}
         >
+          <rect width={layout.width} height={layout.height} fill="#1a2838" />
+          <TerrainMapBackground
+            terrain={network.terrain}
+            bounds={geoBounds}
+            width={layout.width}
+            height={layout.height}
+          />
           {mapData.edges.map((edge) => {
             const p1 = posById.get(edge.fromId)
             const p2 = posById.get(edge.toId)
@@ -224,7 +257,8 @@ export function IsochroneMap({
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+        </div>
+      </GeographicMapFrame>
     </div>
   )
 }

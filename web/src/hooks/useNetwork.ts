@@ -8,6 +8,7 @@ import {
   validateNetworkExport,
   type NetworkLoadError,
 } from '../lib/network/loadNetworkExport'
+import { hasTerrainData } from '../lib/terrain/terrainAvailability'
 
 export const NETWORK_DATA_URL = '/data/tpf2_network_export.json'
 const SESSION_STORAGE_KEY = 'pathforgefever-uploaded-network'
@@ -101,7 +102,8 @@ export function useNetwork(dataUrl = NETWORK_DATA_URL): NetworkState {
         if (loadGeneration === 0) {
           const restored = tryRestoreSessionUpload()
           const restoredName = sessionStorage.getItem(`${SESSION_STORAGE_KEY}:name`)
-          if (restored) {
+          // Alte Uploads ohne Terrain nicht bevorzugen — Server-Export mit Gelände laden
+          if (restored && hasTerrainData(restored.terrain)) {
             const next = applyNetwork(restored)
             if (cancelled) return
             setNetwork(next.network)
@@ -109,6 +111,10 @@ export function useNetwork(dataUrl = NETWORK_DATA_URL): NetworkState {
             setSource('upload')
             setUploadedFileName(restoredName)
             return
+          }
+          if (restored && !hasTerrainData(restored.terrain)) {
+            sessionStorage.removeItem(SESSION_STORAGE_KEY)
+            sessionStorage.removeItem(`${SESSION_STORAGE_KEY}:name`)
           }
         }
 

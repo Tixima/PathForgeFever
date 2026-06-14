@@ -12,6 +12,8 @@ export interface NetworkMapMeta {
   }
 }
 
+import type { TerrainExport } from './terrain'
+
 export interface NetworkExport {
   generated_by: string
   generated_at_unix: number
@@ -29,6 +31,7 @@ export interface NetworkExport {
   scale: ScaleInfo
   quality_report: QualityReportEntry[]
   network_map?: NetworkMapMeta
+  terrain?: TerrainExport
   experimental?: { enabled?: boolean; warning?: string }
   diagnostics?: Array<{ level: string; message: string }>
 }

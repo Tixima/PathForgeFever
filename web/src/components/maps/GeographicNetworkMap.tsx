@@ -1,15 +1,21 @@
 import { useMemo, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { buildGeographicLayout } from '../../lib/maps/geoLayout'
+import { resolveGeoBounds } from '../../lib/maps/geoProjection'
 import type { NetworkMapMeta } from '../../types/network'
+import type { TerrainExport } from '../../types/terrain'
 import type { LayoutStation, MapHover, NetworkMapData } from '../../lib/maps/types'
+import { buildNetworkMapOverlay } from '../../lib/maps/map3dOverlay'
 import { MapTooltip } from './MapTooltip'
 import { CompassRose } from './CompassRose'
+import { GeographicMapFrame } from './GeographicMapFrame'
+import { TerrainMapBackground } from './TerrainMapBackground'
 import { ZoomableMapViewport } from './ZoomableMapViewport'
 
 interface GeographicNetworkMapProps {
   mapData: NetworkMapData
   boundingBox?: NetworkMapMeta['bounding_box']
+  terrain?: TerrainExport | null
   highlightStationIds?: number[]
   highlightLineIds?: number[]
   onStationClick?: (station: LayoutStation) => void
@@ -18,6 +24,7 @@ interface GeographicNetworkMapProps {
 export function GeographicNetworkMap({
   mapData,
   boundingBox,
+  terrain,
   highlightStationIds = [],
   highlightLineIds = [],
   onStationClick,
@@ -34,6 +41,11 @@ export function GeographicNetworkMap({
     [mapData.stations, boundingBox],
   )
 
+  const geoBounds = useMemo(
+    () => resolveGeoBounds(mapData.stations, { boundingBox, preserveAspectRatio: true }),
+    [mapData.stations, boundingBox],
+  )
+
   const posById = useMemo(
     () => new Map(layout.stations.map((s) => [s.id, { x: s.x, y: s.y }])),
     [layout.stations],
@@ -43,8 +55,19 @@ export function GeographicNetworkMap({
   const highlightLineSet = useMemo(() => new Set(highlightLineIds), [highlightLineIds])
   const dimLines = hoveredLineId !== null || highlightLineIds.length > 0
 
+  const overlay3d = useMemo(
+    () =>
+      buildNetworkMapOverlay(mapData.stations, mapData.edges, terrain, {
+        highlightStationIds,
+        highlightLineIds,
+        dimUnhighlighted: dimLines,
+        stationBounds: geoBounds,
+      }),
+    [mapData.stations, mapData.edges, terrain, highlightStationIds, highlightLineIds, dimLines, geoBounds],
+  )
+
   return (
-    <div className="netmap netmap--geo">
+    <GeographicMapFrame terrain={terrain} overlay={overlay3d} stationBounds={geoBounds} className="netmap netmap--geo">
       <ZoomableMapViewport
         contentWidth={layout.width}
         contentHeight={layout.height}
@@ -55,7 +78,14 @@ export function GeographicNetworkMap({
             <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
           </pattern>
         </defs>
-        <rect width={layout.width} height={layout.height} fill="url(#geoGrid)" />
+        <rect width={layout.width} height={layout.height} fill="#1a2838" />
+        <TerrainMapBackground
+          terrain={terrain}
+          bounds={geoBounds}
+          width={layout.width}
+          height={layout.height}
+        />
+        <rect width={layout.width} height={layout.height} fill="url(#geoGrid)" opacity={0.12} />
 
         {mapData.edges.map((edge) => {
           const p1 = posById.get(edge.fromId)
@@ -142,6 +172,6 @@ export function GeographicNetworkMap({
       <AnimatePresence mode="wait">
         {hover && <MapTooltip hover={hover} mapData={mapData} />}
       </AnimatePresence>
-    </div>
+    </GeographicMapFrame>
   )
 }

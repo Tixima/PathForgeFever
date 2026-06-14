@@ -140,7 +140,14 @@ export function RouteTimeline({
         badge={`${route.legs.length} Linie${route.legs.length !== 1 ? 'n' : ''}`}
         defaultOpen={false}
       >
-        <RouteMap route={route} stations={stations} scale={scale} boundingBox={boundingBox} embedded />
+        <RouteMap
+          route={route}
+          stations={stations}
+          scale={scale}
+          boundingBox={boundingBox}
+          terrain={network.terrain}
+          embedded
+        />
       </CollapsibleSection>
 
       <div className="route-journey">

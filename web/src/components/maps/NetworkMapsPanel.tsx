@@ -102,8 +102,8 @@ function NetworkMapsContent({
         {mode === 'schematic' &&
           'Schematischer Liniennetzplan: horizontale Linien, gemeinsame Spalten an Umsteigern — zoombar.'}
         {mode === 'topology' &&
-          'Netzgraph auf TF2-Koordinaten — echte Proportionen, Norden oben, Hub-Knoten hervorgehoben.'}
-        {mode === 'geo' && 'Spielkarte: TF2-Koordinaten (X/Y), Norden oben, proportionale Darstellung.'}
+          'Netzgraph auf TF2-Koordinaten — echte Proportionen, Norden oben, Hub-Knoten hervorgehoben. 3D-Button für Geländeansicht.'}
+        {mode === 'geo' && 'Spielkarte: TF2-Koordinaten (X/Y), Norden oben. 3D-Button für Höhen, Wasser und Untergrund.'}
         {mode === 'heatmap' && 'Passagier-Heatmap: Linienbreite nach Passagieraufkommen aus dem Export.'}
         {' '}Scrollen zum Zoomen, Ziehen zum Verschieben. Hover für Details.
       </p>
@@ -120,6 +120,7 @@ function NetworkMapsContent({
         <TopologyGraphMap
           mapData={mapData}
           boundingBox={boundingBox}
+          terrain={network.terrain}
           highlightStationIds={highlightStationIds}
           highlightLineIds={highlightLineIds}
           onStationClick={onStationPick}
@@ -129,6 +130,7 @@ function NetworkMapsContent({
         <GeographicNetworkMap
           mapData={mapData}
           boundingBox={boundingBox}
+          terrain={network.terrain}
           highlightStationIds={highlightStationIds}
           highlightLineIds={highlightLineIds}
           onStationClick={onStationPick}
@@ -220,4 +222,4 @@ export function NetworkMapsPanel({
     </section>
   )
 }
-
+

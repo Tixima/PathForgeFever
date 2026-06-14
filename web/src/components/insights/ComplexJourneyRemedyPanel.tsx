@@ -68,6 +68,7 @@ export function ComplexJourneyRemedyPanel({
         <ComplexJourneyRemedyMap
           mapData={mapData}
           boundingBox={boundingBox}
+          terrain={network.terrain}
           proposals={proposals}
           selectedId={selectedId}
           onSelect={setSelectedId}

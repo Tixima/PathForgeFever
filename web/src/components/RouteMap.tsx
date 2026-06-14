@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { NetworkMapMeta } from '../types/network'
+import type { TerrainExport } from '../types/terrain'
 import type { RouteResult, StationOption } from '../lib/routing/types'
 import type { ScaleSettings } from '../lib/scale'
 import { formatDistance, formatDuration } from '../lib/format'
@@ -16,12 +17,16 @@ import {
   resolveGeoBounds,
 } from '../lib/maps/geoProjection'
 import { CompassRose } from './maps/CompassRose'
+import { GeographicMapFrame } from './maps/GeographicMapFrame'
+import { TerrainMapBackground } from './maps/TerrainMapBackground'
+import { buildRouteMapOverlay } from '../lib/maps/map3dOverlay'
 
 interface RouteMapProps {
   route: RouteResult
   stations: StationOption[]
   scale: ScaleSettings
   boundingBox?: NetworkMapMeta['bounding_box']
+  terrain?: TerrainExport | null
   embedded?: boolean
 }
 
@@ -31,7 +36,7 @@ interface MapNode {
   name: string
   stationId: number
   index: number
-  kind: 'start' | 'end' | 'via' | 'stop'
+  kind: 'start' | 'end' | 'via' | 'transfer' | 'stop'
   interchange: boolean
   lineNames: string[]
 }
@@ -65,13 +70,17 @@ function mapHeight(embedded: boolean): number {
   return embedded ? 420 : GEO_VIEW_H
 }
 
-export function RouteMap({ route, stations, scale, boundingBox, embedded = false }: RouteMapProps) {
+export function RouteMap({ route, stations, scale, boundingBox, terrain, embedded = false }: RouteMapProps) {
   const [hover, setHover] = useState<HoverInfo | null>(null)
   const viewH = mapHeight(embedded)
 
   const mapData = useMemo(() => {
     const stationById = new Map(stations.map((s) => [s.id, s]))
     const viaSet = new Set(route.viaStationIds ?? [])
+    const transferIds = new Set<number>()
+    for (let i = 0; i < route.legs.length - 1; i++) {
+      transferIds.add(route.legs[i].toStationId)
+    }
 
     const coords = route.stationIds
       .map((id) => {
@@ -112,6 +121,7 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
         if (index === 0) kind = 'start'
         else if (index === route.stationIds.length - 1) kind = 'end'
         else if (viaSet.has(id)) kind = 'via'
+        else if (transferIds.has(id)) kind = 'transfer'
 
         return {
           ...pos,
@@ -164,12 +174,18 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
       }
     }
 
-    return { nodes, segments, viewBox: buildGeoViewBox(VIEW_W, viewH) }
+    return { nodes, segments, viewBox: buildGeoViewBox(VIEW_W, viewH), bounds }
   }, [route, stations, boundingBox, viewH])
+
+  const overlay3d = useMemo(
+    () =>
+      mapData ? buildRouteMapOverlay(route, stations, terrain, mapData.bounds) : undefined,
+    [mapData, route, stations, terrain],
+  )
 
   if (!mapData) return null
 
-  const { nodes, segments, viewBox } = mapData
+  const { nodes, segments, viewBox, bounds } = mapData
 
   return (
     <div className={`route-map ${embedded ? 'route-map--embedded' : ''}`}>
@@ -204,14 +220,23 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
         </div>
       )}
 
-      <div className="route-map__canvas">
+      <GeographicMapFrame terrain={terrain} overlay={overlay3d} stationBounds={bounds}>
+        <div className="route-map__canvas">
         <svg viewBox={viewBox} className="route-map__svg" role="img" aria-label="Streckenverlauf Norden oben">
           <defs>
             <pattern id="routeGeoGrid" width="40" height="40" patternUnits="userSpaceOnUse">
               <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
             </pattern>
           </defs>
-          <rect width={VIEW_W} height={viewH} fill="url(#routeGeoGrid)" />
+          <rect width={VIEW_W} height={viewH} fill="#1a2838" />
+          <TerrainMapBackground
+            terrain={terrain}
+            bounds={bounds}
+            width={VIEW_W}
+            height={viewH}
+            padding={PAD}
+          />
+          <rect width={VIEW_W} height={viewH} fill="url(#routeGeoGrid)" opacity={0.15} />
 
           {segments.map((seg, i) => (
             <g key={`${seg.lineId}-${i}`}>
@@ -246,8 +271,19 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
           ))}
 
           {nodes.map((node) => {
-            const r = node.kind === 'start' || node.kind === 'end' ? 7 : node.kind === 'via' ? 5.5 : 4
-            const showLabel = node.kind === 'start' || node.kind === 'end'
+            const r =
+              node.kind === 'start' || node.kind === 'end'
+                ? 8
+                : node.kind === 'transfer'
+                  ? 7
+                  : node.kind === 'via'
+                    ? 5.5
+                    : 4
+            const showLabel =
+              node.kind === 'start' ||
+              node.kind === 'end' ||
+              node.kind === 'via' ||
+              node.kind === 'transfer'
 
             return (
               <g
@@ -257,6 +293,18 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
                 onMouseLeave={() => setHover(null)}
               >
                 <circle cx={node.x} cy={node.y} r={r + 6} className="route-map__node-hit" />
+                {node.kind === 'transfer' && (
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={r + 5}
+                    className="route-map__node route-map__node--transfer-ring"
+                    fill="none"
+                    stroke="#fb923c"
+                    strokeWidth={2}
+                    opacity={0.7}
+                  />
+                )}
                 <circle
                   cx={node.x}
                   cy={node.y}
@@ -290,6 +338,7 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
                     {hover.data.kind === 'start' && 'Startbahnhof'}
                     {hover.data.kind === 'end' && 'Zielbahnhof'}
                     {hover.data.kind === 'via' && 'Zwischenhalt (ÜBER)'}
+                    {hover.data.kind === 'transfer' && 'Umsteigebahnhof'}
                     {hover.data.kind === 'stop' && `Zwischenstation ${hover.data.index + 1}`}
                   </span>
                   {hover.data.interchange && <span className="route-map__tooltip-tag">Umsteigebahnhof</span>}
@@ -317,7 +366,8 @@ export function RouteMap({ route, stations, scale, boundingBox, embedded = false
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+        </div>
+      </GeographicMapFrame>
     </div>
   )
 }

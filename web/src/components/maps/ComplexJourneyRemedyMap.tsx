@@ -1,14 +1,20 @@
 import { useMemo } from 'react'
 import type { NetworkMapMeta } from '../../types/network'
+import type { TerrainExport } from '../../types/terrain'
 import { buildGeographicLayout } from '../../lib/maps/geoLayout'
+import { resolveGeoBounds } from '../../lib/maps/geoProjection'
 import type { LayoutStation, NetworkMapData } from '../../lib/maps/types'
 import type { ComplexJourneyLineProposal } from '../../lib/routing/complexJourneyRemedies'
+import { buildComplexRemedyOverlay } from '../../lib/maps/map3dOverlay'
 import { CompassRose } from './CompassRose'
+import { GeographicMapFrame } from './GeographicMapFrame'
+import { TerrainMapBackground } from './TerrainMapBackground'
 import { ZoomableMapViewport } from './ZoomableMapViewport'
 
 interface ComplexJourneyRemedyMapProps {
   mapData: NetworkMapData
   boundingBox?: NetworkMapMeta['bounding_box']
+  terrain?: TerrainExport | null
   proposals: ComplexJourneyLineProposal[]
   selectedId: string | null
   onSelect: (id: string) => void
@@ -17,6 +23,7 @@ interface ComplexJourneyRemedyMapProps {
 export function ComplexJourneyRemedyMap({
   mapData,
   boundingBox,
+  terrain,
   proposals,
   selectedId,
   onSelect,
@@ -31,6 +38,11 @@ export function ComplexJourneyRemedyMap({
         fitToPoints: false,
         preserveAspectRatio: true,
       }),
+    [mapData.stations, boundingBox],
+  )
+
+  const geoBounds = useMemo(
+    () => resolveGeoBounds(mapData.stations, { boundingBox, preserveAspectRatio: true }),
     [mapData.stations, boundingBox],
   )
 
@@ -68,8 +80,22 @@ export function ComplexJourneyRemedyMap({
     [selected],
   )
 
+  const overlay3d = useMemo(
+    () =>
+      buildComplexRemedyOverlay(mapData.stations, terrain, {
+        referenceStationIds: selected?.referenceStationIds,
+        proposalStationIds: selected?.stationIds,
+        fromId: selected?.fromId,
+        toId: selected?.toId,
+        transferIds: selected?.referenceTransferStationIds,
+        highlightIds: selected?.highlightStationIds,
+        stationBounds: geoBounds,
+      }),
+    [mapData.stations, terrain, selected, geoBounds],
+  )
+
   return (
-    <div className="complex-remedy-map netmap netmap--geo">
+    <GeographicMapFrame terrain={terrain} overlay={overlay3d} stationBounds={geoBounds} className="complex-remedy-map netmap netmap--geo">
       <ZoomableMapViewport
         contentWidth={layout.width}
         contentHeight={layout.height}
@@ -83,7 +109,14 @@ export function ComplexJourneyRemedyMap({
             <path d="M0,0 L6,3 L0,6 Z" fill="#34d399" />
           </marker>
         </defs>
-        <rect width={layout.width} height={layout.height} fill="url(#remedyGrid)" />
+        <rect width={layout.width} height={layout.height} fill="#1a2838" />
+        <TerrainMapBackground
+          terrain={terrain}
+          bounds={geoBounds}
+          width={layout.width}
+          height={layout.height}
+        />
+        <rect width={layout.width} height={layout.height} fill="url(#remedyGrid)" opacity={0.12} />
 
         {mapData.edges.map((edge) => {
           const p1 = posById.get(edge.fromId)
@@ -188,7 +221,7 @@ export function ComplexJourneyRemedyMap({
           Neue Linie (Neubau)
         </span>
       </div>
-    </div>
+    </GeographicMapFrame>
   )
 }
 
